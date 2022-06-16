@@ -1,0 +1,41 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>JasonShave.$(MSBuildProjectName)</AssemblyName>
+    <RootNamespace>JasonShave.$(MSBuildProjectName.Replace(" ", "_"))</RootNamespace>
+    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+    <Company>Microsoft Corporation</Company>
+    <PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Description>A library used to read from an Azure Storage Queue. Use this package in combination with code samples for Azure Communication Services projects where Event Grid subscriptions from a storage queue are used.</Description>
+    <Copyright>Microsoft Corporation</Copyright>
+    <PackageTags>Azure, Azure Storage, Azure Storage Queue, Storage Queue</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.Storage.Queues" Version="12.8.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="6.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="6.0.0" />
+    <InternalsVisibleTo Include="AzureStorage.QueueService.Tests" />
+  </ItemGroup>
+
+	<ItemGroup>
+		<!-- Make assembly visible to test assembly -->
+		<AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+			<_Parameter1>$(AssemblyName).Tests</_Parameter1>
+		</AssemblyAttribute>
+
+		<!-- Make assembly usable for Moq, so Moq is able to instanciate objects of 'internal' types -->
+		<AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+			<_Parameter1>DynamicProxyGenAssembly2</_Parameter1>
+		</AssemblyAttribute>
+	</ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Exceptions\" />
+  </ItemGroup>
+
+</Project>
