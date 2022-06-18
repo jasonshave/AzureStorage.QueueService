@@ -15,7 +15,6 @@ You will need to create an Azure Storage account in the Azure portal using a uni
 2. Set your `ConnectionString` and `QueueName` properties in your [.NET User Secrets store](https://docs.microsoft.com/en-us/aspnet/core/security/app-secrets?view=aspnetcore-6.0&tabs=windows), `appsettings.json`, or anywhere your `IConfiguration` provider can look for the `QueueClientSettings`. For example:
 
     ```json
-    // appsettings.json or User Secrets store in .NET
     {
         "QueueClientSettings" : {
             "ConnectionString": "[your_connection_string]",
