@@ -7,12 +7,18 @@
     <AssemblyName>JasonShave.$(MSBuildProjectName)</AssemblyName>
     <RootNamespace>JasonShave.$(MSBuildProjectName.Replace(" ", "_"))</RootNamespace>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
-    <Company>Microsoft Corporation</Company>
+    <Company>Jason Shave</Company>
     <PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <Description>A library used to read from an Azure Storage Queue. Use this package in combination with code samples for Azure Communication Services projects where Event Grid subscriptions from a storage queue are used.</Description>
-    <Copyright>Microsoft Corporation</Copyright>
-    <PackageTags>Azure, Azure Storage, Azure Storage Queue, Storage Queue</PackageTags>
+    <Copyright></Copyright>
+    <PackageTags>Azure, Azure Storage, Azure Storage Queue, Storage Queue, Queue Service, Jason Shave</PackageTags>
+    <PackageProjectUrl>https://github.com/jasonshave/JasonShave.AzureStorage.QueueService</PackageProjectUrl>
+    <PackageIcon>familyguy.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/jasonshave/JasonShave.AzureStorage.QueueService</RepositoryUrl>
+    <Authors>Jason Shave</Authors>
   </PropertyGroup>
 
   <ItemGroup>
@@ -36,6 +42,17 @@
 
   <ItemGroup>
     <Folder Include="Exceptions\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\..\..\..\OneDrive\familyguy.png">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Include="..\..\README.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
   </ItemGroup>
 
 </Project>
