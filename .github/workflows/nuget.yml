@@ -8,10 +8,10 @@ on:
 env:
   PACKAGE_OUTPUT: ${{github.workspace}}/package
   NUGET_URL: https://api.nuget.org/v3/index.json
-  NUGET_KEY: ${{github.}}
 
 jobs:
-  release:
+  deploy:
+    name: Deploy
     
     runs-on: ubuntu-latest
 
