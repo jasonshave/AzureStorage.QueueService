@@ -11,10 +11,10 @@
     <PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <Description>A library used to read from an Azure Storage Queue. Use this package in combination with code samples for Azure Communication Services projects where Event Grid subscriptions from a storage queue are used.</Description>
-    <Copyright></Copyright>
+    <Copyright>Jason Shave</Copyright>
     <PackageTags>Azure, Azure Storage, Azure Storage Queue, Storage Queue, Queue Service, Jason Shave</PackageTags>
     <PackageProjectUrl>https://github.com/jasonshave/JasonShave.AzureStorage.QueueService</PackageProjectUrl>
-    <PackageIcon>familyguy.png</PackageIcon>
+    <PackageIcon>jasonshave.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryType>git</RepositoryType>
     <RepositoryUrl>https://github.com/jasonshave/JasonShave.AzureStorage.QueueService</RepositoryUrl>
@@ -48,7 +48,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\..\..\..\OneDrive\familyguy.png">
+    <None Include="..\..\images\jasonshave.png">
       <Pack>True</Pack>
       <PackagePath>\</PackagePath>
     </None>
