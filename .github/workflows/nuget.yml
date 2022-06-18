@@ -1,0 +1,40 @@
+name: Nuget
+
+on:
+  push:
+    branches: [ release ]
+    tags:
+      - 'v*'
+
+env:
+  PACKAGE_OUTPUT: ${{github.workspace}}/package
+  NUGET_URL: https://api.nuget.org/v3/index.json
+  NUGET_KEY: ${{github.}}
+
+jobs:
+  release:
+    
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup .NET
+    - uses: actions/setup-dotnet@v1
+      with:
+        dotnet-version: | 
+          6.0.x
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --no-restore --configuration Release
+
+    - name: Get Version
+      id: version
+      uses: battila7/get-version-action@v2
+
+    - name: Package Project
+      run: dotnet pack --no-restore --no-build --configuration Release --include-symbols -p:PackageVersion=${{steps.version.outputs.version-without-v}}
+
+    - name: Publish Package
+      run: dotnet nuget push ${{env.PACKAGE_OUTPUT}}/*.nupkg -k ${{secrets.NUGET_KEY}} -s ${{env.NUGET_URL}}
