@@ -2,11 +2,12 @@ name: Nuget
 
 on:
   push:
+    branches: [ master ]
     tags:
       - 'v*'
 
 env:
-  PACKAGE_OUTPUT: ${{github.workspace}}/package
+  PACKAGE_OUTPUT: ${{ github.workspace }}/package
   NUGET_URL: https://api.nuget.org/v3/index.json
 
 jobs:
@@ -33,7 +34,7 @@ jobs:
       uses: battila7/get-version-action@v2
 
     - name: Package Project
-      run: dotnet pack --no-restore --no-build --configuration Release --include-symbols -p:PackageVersion=${{steps.version.outputs.version-without-v}}
+      run: dotnet pack --no-restore --no-build --configuration Release --include-symbols -p:PackageVersion=${{ steps.version.outputs.version-without-v }} --output ${{ env.PACKAGE_OUTPUT }}
 
     - name: Publish Package
-      run: dotnet nuget push ${{env.PACKAGE_OUTPUT}}/*.nupkg -k ${{secrets.NUGET_KEY}} -s ${{env.NUGET_URL}}
+      run: dotnet nuget push ${{ env.PACKAGE_OUTPUT }}/*.nupkg -k ${{ secrets.NUGET_KEY }} -s ${{ env.NUGET_URL }} --skip-duplicate
