@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net6.0</TargetFramework>
@@ -11,6 +11,7 @@
   <ItemGroup>
     <PackageReference Include="AutoFixture" Version="4.17.0" />
     <PackageReference Include="FluentAssertions" Version="6.7.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="6.0.1" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.1.0" />
     <PackageReference Include="Moq" Version="4.18.1" />
     <PackageReference Include="xunit" Version="2.4.1" />
@@ -25,7 +26,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\AzureStorage.QueueService\AzureStorage.QueueService.csproj" />
+    <ProjectReference Include="..\..\src\AzureStorage.QueueService\JasonShave.AzureStorage.QueueService.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="testConfiguration.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

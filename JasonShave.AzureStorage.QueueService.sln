@@ -3,9 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.2.32526.322
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AzureStorage.QueueService", "src\AzureStorage.QueueService\AzureStorage.QueueService.csproj", "{F18BA53F-94A4-49C2-A389-56479794D255}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "JasonShave.AzureStorage.QueueService", "src\AzureStorage.QueueService\JasonShave.AzureStorage.QueueService.csproj", "{F18BA53F-94A4-49C2-A389-56479794D255}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AzureStorage.QueueService.Tests", "tests\AzureStorage.QueueService.Tests\AzureStorage.QueueService.Tests.csproj", "{4F14CBE5-50BB-47EF-A51D-D9C202B1C509}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "JasonShave.AzureStorage.QueueService.Tests", "tests\AzureStorage.QueueService.Tests\JasonShave.AzureStorage.QueueService.Tests.csproj", "{4F14CBE5-50BB-47EF-A51D-D9C202B1C509}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

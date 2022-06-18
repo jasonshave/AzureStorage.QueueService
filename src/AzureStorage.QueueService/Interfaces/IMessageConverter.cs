@@ -3,4 +3,6 @@
 internal interface IMessageConverter
 {
     TOutput? Convert<TOutput>(BinaryData input);
+
+    TOutput? Convert<TOutput>(string input);
 }

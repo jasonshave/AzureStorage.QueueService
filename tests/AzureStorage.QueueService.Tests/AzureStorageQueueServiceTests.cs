@@ -1,5 +1,4 @@
-﻿using System.Net;
-using AutoFixture;
+﻿using AutoFixture;
 using Azure;
 using Azure.Storage.Queues;
 using Azure.Storage.Queues.Models;
@@ -7,21 +6,25 @@ using FluentAssertions;
 using JasonShave.AzureStorage.QueueService.Interfaces;
 using JasonShave.AzureStorage.QueueService.Models;
 using JasonShave.AzureStorage.QueueService.Services;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Moq;
 
-namespace AzureStorage.QueueService.Tests;
+namespace JasonShave.AzureStorage.QueueService.Tests;
 
 public class AzureStorageQueueServiceTests
 {
     private readonly QueueClientSettings _queueClientSettings;
+
     public AzureStorageQueueServiceTests()
     {
-        _queueClientSettings = new QueueClientSettings()
-        {
-            QueueName = "Test",
-            ConnectionString = "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=FAKE/xd3SoV4C52caAxURkg7Pso+X5QyFprgcAeDCw7joUYCGx3J7B+V+PZ6znEQ0lN/Mvxqdkwi+AStHyBWuA==;EndpointSuffix=core.windows.net"
-        };
+        var configuration = new ConfigurationBuilder()
+            .SetBasePath(Environment.CurrentDirectory)
+            .AddJsonFile("testConfiguration.json", false, true)
+            .Build();
+
+        _queueClientSettings = new();
+        configuration.Bind(nameof(QueueClientSettings), _queueClientSettings);
     }
 
     [Fact(DisplayName = "Peek messages returns message collection")]
@@ -36,21 +39,18 @@ public class AzureStorageQueueServiceTests
 
         var queueClient = new Mock<QueueClient>(_queueClientSettings.ConnectionString, _queueClientSettings.QueueName);
         queueClient.Setup(x => x.PeekMessagesAsync(It.IsAny<int>(), CancellationToken.None)).ReturnsAsync(response);
-        
-        var mockQueueClientFactory = new Mock<IQueueClientFactory>();
-        mockQueueClientFactory.Setup(x => x.GetQueueClient(It.IsAny<string>())).Returns(queueClient.Object);
 
         var mockMessageConverter = new Mock<IMessageConverter>();
-        mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<BinaryData>())).Returns(fixture.Create<TestObject>());
+        mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<string>())).Returns(fixture.Create<TestObject>());
 
         var mockLogger = new Mock<ILogger<AzureStorageQueueService>>();
 
-        var subject = new AzureStorageQueueService(mockQueueClientFactory.Object, mockMessageConverter.Object,
+        var subject = new AzureStorageQueueService(mockMessageConverter.Object, queueClient.Object,
             mockLogger.Object);
 
         // act
-        var messages = await subject.PeekMessages<TestObject>(It.IsAny<string>(), It.IsAny<int>());
-        var numMessages = await subject.GetMessageCount(It.IsAny<string>(), It.IsAny<int>());
+        var messages = await subject.PeekMessages<TestObject>(It.IsAny<int>());
+        var numMessages = await subject.GetMessageCount(It.IsAny<int>());
 
         // assert
         messages.Should().NotBeEmpty();
@@ -72,29 +72,19 @@ public class AzureStorageQueueServiceTests
         queueClient.Setup(x => x.ReceiveMessagesAsync(CancellationToken.None)).ReturnsAsync(response);
         queueClient.Setup(x => x.DeleteMessageAsync(It.IsAny<string>(), It.IsAny<string>(), CancellationToken.None));
 
-        var mockQueueClientFactory = new Mock<IQueueClientFactory>();
-        mockQueueClientFactory.Setup(x => x.GetQueueClient(It.IsAny<string>())).Returns(queueClient.Object);
-
         var mockMessageConverter = new Mock<IMessageConverter>();
-        mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<BinaryData>())).Returns(fixture.Create<TestObject>());
+        mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<string>())).Returns(fixture.Create<TestObject>());
 
         var mockLogger = new Mock<ILogger<AzureStorageQueueService>>();
 
-        var subject = new AzureStorageQueueService(mockQueueClientFactory.Object, mockMessageConverter.Object,
+        var subject = new AzureStorageQueueService(mockMessageConverter.Object, queueClient.Object,
             mockLogger.Object);
 
         // act/assert
-        await subject.ReceiveMessagesAsync<TestObject>(_queueClientSettings.QueueName, HandleMessage, HandleException);
+        await subject.ReceiveMessagesAsync<TestObject>(HandleMessage, HandleException);
 
-        Task HandleMessage(TestObject? testObject)
-        {
-            return Task.CompletedTask;
-        }
-
-        Task HandleException(Exception exception)
-        {
-            return Task.CompletedTask;
-        }
+        Task HandleMessage(TestObject? testObject) => Task.CompletedTask;
+        Task HandleException(Exception exception) => Task.CompletedTask;
     }
 
     [Fact(DisplayName = "Peek messages returns message collection")]
@@ -111,29 +101,21 @@ public class AzureStorageQueueServiceTests
         queueClient.Setup(x => x.ReceiveMessagesAsync(CancellationToken.None)).ReturnsAsync(response);
         queueClient.Setup(x => x.DeleteMessageAsync(It.IsAny<string>(), It.IsAny<string>(), CancellationToken.None));
 
-        var mockQueueClientFactory = new Mock<IQueueClientFactory>();
-        mockQueueClientFactory.Setup(x => x.GetQueueClient(It.IsAny<string>())).Returns(queueClient.Object);
-
         var mockMessageConverter = new Mock<IMessageConverter>();
-        mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<BinaryData>())).Returns(fixture.Create<TestObject>());
+        mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<string>())).Returns(fixture.Create<TestObject>());
 
         var mockLogger = new Mock<ILogger<AzureStorageQueueService>>();
 
-        var subject = new AzureStorageQueueService(mockQueueClientFactory.Object, mockMessageConverter.Object,
+        var subject = new AzureStorageQueueService(mockMessageConverter.Object, queueClient.Object,
             mockLogger.Object);
 
         // act/assert
-        await subject.ReceiveMessagesAsync<TestObject>(_queueClientSettings.QueueName, HandleMessage, HandleException);
-
-        Task HandleMessage(TestObject? testObject)
-        {
-            throw new Exception("Hello from handler");
-        }
-
-        Task HandleException(Exception exception)
-        {
-            exception.Message.Should().Be("Hello from handler");
-            return Task.CompletedTask;
-        }
+        await subject.ReceiveMessagesAsync<TestObject>(
+            _ => throw new Exception("Hello from Handler"),
+            x =>
+            {
+                x.Message.Should().Be("Hello from Handler");
+                return Task.CompletedTask;
+            });
     }
 }
