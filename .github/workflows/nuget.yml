@@ -2,6 +2,7 @@ name: Nuget
 
 on:
   push:
+    branches: [ master ]
     tags:
       - 'v*'
 
