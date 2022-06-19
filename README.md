@@ -12,6 +12,13 @@ You will need to create an Azure Storage account in the Azure portal using a uni
 1. [Create a storage account](https://docs.microsoft.com/en-us/azure/storage/common/storage-account-create?tabs=azure-portal) in your Azure portal.
 2. [Obtain your connection string](https://docs.microsoft.com/en-us/azure/storage/common/storage-account-keys-manage?tabs=azure-portal) from the Azure portal.
 
+## Message handling behavior
+
+- Multiple messages are pulled when `ReceiveMessagesAsync<T>` is called.
+- If your handler does not throw, messages are automatically removed from the queue otherwise the message is returned to the queue for delivery again.
+- Deserialization uses the `System.Text.Json` deserialization behavior. This can be overridden by specifying your own `JsonSerializerOptions` as seen below.
+- You can 'peek' messages using `PeekMessages<T>` which returns a collection but doesn't remove them from the queue.
+
 ## Usage
 
 1. Add the Nuget package `JasonShave.AzureStorage.QueueService` to your .NET project
@@ -32,16 +39,13 @@ You will need to create an Azure Storage account in the Azure portal using a uni
 3. Configure the library from your `Startup.cs` or `Program.cs` file as follows:
 
     ```csharp
-    // get QueueClientSettings using this method
-    services.AddAzureStorageQueueServices(options =>
-    {
-        options.ConnectionString = configuration["QueueClientSettings:ConnectionString"];
-        options.QueueName = configuration["QueueClientSettings:QueueName"];
-        options.CreateIfNotExists = true;
-    });
-    
-    // or use the IConfiguration binder
+    // get configuration from IConfiguration binder
     services.AddAzureStorageQueueServices(options => configuration.Bind(nameof(QueueClientSettings), options));
+
+    // optionally customize JsonSerializerOptions
+    services.AddAzureStorageQueueServices(
+        options => hostContext.Configuration.Bind(nameof(QueueClientSettings), options),
+        serializationOptions => serializationOptions.AllowTrailingCommas = true);
     ```
 
 4. Inject the `IQueueService` interface and use as follows:
@@ -50,7 +54,7 @@ You will need to create an Azure Storage account in the Azure portal using a uni
     public class Worker : IHostedService
     {
         private readonly IQueueService _queueService;
-        private readonly IMyMessageHandler _myMessageHandler;
+        private readonly IMyMessageHandler _myMessageHandler; // see optional handler below
     
         public Worker(IQueueService queueService, IMyMessageHandler myMessageHandler)
         {
@@ -63,11 +67,29 @@ You will need to create an Azure Storage account in the Azure portal using a uni
             while (!cancellationToken.IsCancellationRequested)
             {
                 await _queueService.ReceiveMessagesAsync<MyMessage>(
-                    message => _eventGridMessageHandler.HandleAsync(message),
-                    exception => _eventGridMessageHandler.HandleAsync(exception),
+                    message => _myMessageHandler.HandleAsync(message),
+                    exception => _myMessageHandler.HandleExceptionAsync(exception),
                     cancellationToken);
             }
         }
+    }
+    ```
+
+5. Create your own message handler (optional)
+
+    The `ReceiveMessagesAsync<T>` method has two `HandleAsync()` methods. The first one handles the `<T>` message type you specify, and the second handles an `Exception` type. These can be implemented as follows:
+
+    ```csharp
+    public interface IMyMessageHandler
+    {
+        Task HandleAsync(MyMessage message);
+        Task HandleExceptionAsync(Exception exception);
+    }
+
+    public class MyMessageHandler : IMyMessageHandler
+    {
+        public async Task HandleAsync(MyMessage message) => // do work
+        public async Task HandleExceptionAsync(Exception exception) => // handle exception
     }
     ```
 

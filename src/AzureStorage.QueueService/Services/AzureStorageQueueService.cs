@@ -35,12 +35,6 @@ internal class AzureStorageQueueService : IQueueService
         return results;
     }
 
-    public async Task<int> GetMessageCount(int numMessages, CancellationToken cancellationToken = default)
-    {
-        PeekedMessage[] result = await _queueClient.PeekMessagesAsync(numMessages, cancellationToken);
-        return result.Count();
-    }
-
     public async Task ReceiveMessagesAsync<TMessage>(Func<TMessage?, Task> handleMessage, Func<Exception, Task> handleException, CancellationToken cancellationToken = default)
         where TMessage : class
     {
