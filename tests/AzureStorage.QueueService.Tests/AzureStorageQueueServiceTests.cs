@@ -50,12 +50,10 @@ public class AzureStorageQueueServiceTests
 
         // act
         var messages = await subject.PeekMessages<TestObject>(It.IsAny<int>());
-        var numMessages = await subject.GetMessageCount(It.IsAny<int>());
-
+        
         // assert
         messages.Should().NotBeEmpty();
-        messages.Count().Should().Be(1);
-        numMessages.Should().Be(1);
+        messages.Count().Should().Be(1);        
     }
 
     [Fact(DisplayName = "Peek messages returns message collection")]
