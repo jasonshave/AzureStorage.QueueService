@@ -14,12 +14,13 @@ You will need to create an Azure Storage account in the Azure portal using a uni
 
 ## Message handling behavior
 
+- Sending a message will automatically serialize the payload to `BinaryData`.
 - Multiple messages are pulled when `ReceiveMessagesAsync<T>` is called.
 - If your handler does not throw, messages are automatically removed from the queue otherwise the message is returned to the queue for delivery again.
-- Deserialization uses the `System.Text.Json` deserialization behavior. This can be overridden by specifying your own `JsonSerializerOptions` as seen below.
+- Automatic deserialization uses the `System.Text.Json` deserialization behavior. This can be overridden by specifying your own `JsonSerializerOptions` as seen below.
 - You can 'peek' messages using `PeekMessages<T>` which returns a collection but doesn't remove them from the queue.
 
-## Usage
+## Configuration
 
 1. Add the Nuget package `JasonShave.AzureStorage.QueueService` to your .NET project
 2. Set your `ConnectionString` and `QueueName` properties in your [.NET User Secrets store](https://docs.microsoft.com/en-us/aspnet/core/security/app-secrets?view=aspnetcore-6.0&tabs=windows), `appsettings.json`, or anywhere your `IConfiguration` provider can look for the `QueueClientSettings`. For example:
@@ -48,15 +49,44 @@ You will need to create an Azure Storage account in the Azure portal using a uni
         serializationOptions => serializationOptions.AllowTrailingCommas = true);
     ```
 
-4. Inject the `IQueueService` interface and use as follows:
+## Sending messages to an Azure storage account queue
+
+The following example shows the .NET "Worker Service" template where the class uses the `IHostedService` interface to run a particular code block repeatedly. The application will send the payload to the queue every five seconds.
+
+1. Inject the `IQueueService` interface and use as follows:
 
     ```csharp
-    public class Worker : IHostedService
+    public class Sender : IHostedService
+    {
+        private readonly IQueueService _queueService;
+        
+        public Sender(IQueueService queueService) => _queueService = queueService;
+        
+        public async Task StartAsync(CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var myMessage = new MyMessage("Test");
+                await _queueService.SendMessageAsync<MyMessage>(myMessage, cancellationToken);
+                Task.Delay(5000);
+            }
+        }    
+    }
+    ```
+
+## Receiving and handling messages from an Azure storage account queue
+
+The following example shows the .NET "Worker Service" template where the class uses the `IHostedService` interface to run a particular code block repeatedly. The application will receive the payload from the queue repeatedly.
+
+1. Inject the `IQueueService` interface and use as follows:
+
+    ```csharp
+    public class Receiver : IHostedService
     {
         private readonly IQueueService _queueService;
         private readonly IMyMessageHandler _myMessageHandler; // see optional handler below
     
-        public Worker(IQueueService queueService, IMyMessageHandler myMessageHandler)
+        public Receiver(IQueueService queueService, IMyMessageHandler myMessageHandler)
         {
             _queueService = queueService;
             _myMessageHandler = myMessageHandler;
@@ -75,9 +105,9 @@ You will need to create an Azure Storage account in the Azure portal using a uni
     }
     ```
 
-5. Create your own message handler (optional)
+2. Create your own message handler (optional)
 
-    The `ReceiveMessagesAsync<T>` method has two `HandleAsync()` methods. The first one handles the `<T>` message type you specify, and the second handles an `Exception` type. These can be implemented as follows:
+    The library has a single `ReceiveMessagesAsync<T>` method which takes two function delegates which allow you to specify your own message handling and exception handling. The first one handles the `<T>` message type you specify, and the second handles an `Exception` type. These can be implemented as follows:
 
     ```csharp
     public interface IMyMessageHandler
@@ -88,8 +118,8 @@ You will need to create an Azure Storage account in the Azure portal using a uni
 
     public class MyMessageHandler : IMyMessageHandler
     {
-        public async Task HandleAsync(MyMessage message) => // do work
-        public async Task HandleExceptionAsync(Exception exception) => // handle exception
+        public async Task HandleAsync(MyMessage message) => Console.WriteLine(message);
+        public async Task HandleExceptionAsync(Exception exception) => Console.WriteLine(exception);
     }
     ```
 

@@ -42,4 +42,10 @@ internal class JsonQueueMessageConverter : IMessageConverter
             throw new DeserializationException(e.Message);
         }
     }
+
+    public BinaryData Convert<TInput>(TInput input)
+    {
+        var binaryData = new BinaryData(input);
+        return binaryData;
+    }
 }

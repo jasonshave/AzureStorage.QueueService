@@ -1,6 +1,7 @@
 ﻿using Azure.Storage.Queues;
 using Azure.Storage.Queues.Models;
 using JasonShave.AzureStorage.QueueService.Interfaces;
+using JasonShave.AzureStorage.QueueService.Models;
 using Microsoft.Extensions.Logging;
 
 namespace JasonShave.AzureStorage.QueueService.Services;
@@ -67,5 +68,13 @@ internal class AzureStorageQueueService : IQueueService
                 await ProcessMessage(queueMessage);
             }
         }
+    }
+
+    public async Task<SendResponse> SendMessageAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default)
+    {
+        BinaryData binaryMessage = _queueMessageConverter.Convert(message);
+        SendReceipt response = await _queueClient.SendMessageAsync(binaryMessage, null, null, cancellationToken);
+
+        return new SendResponse(response.PopReceipt, response.MessageId);
     }
 }

@@ -37,4 +37,37 @@ public class JsonQueueMessageConverterTests
         // act/assert
         subject.Invoking(x => x.Convert<TestObject>(string.Empty)).Should().Throw<DeserializationException>();
     }
+
+    [Fact(DisplayName = "Convert object to BinaryData")]
+    public void Convert_Object_To_BinaryData()
+    {
+        // arrange
+        var fixture = new Fixture();
+        var testObject = fixture.Create<TestObject>();
+
+        var subject = new JsonQueueMessageConverter();
+
+        // act
+        BinaryData binaryData = subject.Convert(testObject);
+
+        // assert
+        binaryData.Should().BeOfType(typeof(BinaryData));
+    }
+
+    [Fact(DisplayName = "Convert from Object to BinaryData and back to Object")]
+    public void Convert_To_And_From()
+    {
+        // arrange
+        var fixture = new Fixture();
+        var testObject = fixture.Create<TestObject>();
+
+        var subject = new JsonQueueMessageConverter();
+
+        // act
+        BinaryData binaryData = subject.Convert(testObject);
+        TestObject? convertedTestObject = subject.Convert<TestObject>(binaryData);
+        
+        // assert
+        testObject.Should().BeEquivalentTo(convertedTestObject);
+    }
 }
