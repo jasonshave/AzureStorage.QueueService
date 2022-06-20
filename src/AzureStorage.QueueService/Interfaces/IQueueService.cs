@@ -1,4 +1,6 @@
-﻿namespace JasonShave.AzureStorage.QueueService.Interfaces;
+﻿using JasonShave.AzureStorage.QueueService.Models;
+
+namespace JasonShave.AzureStorage.QueueService.Interfaces;
 
 public interface IQueueService
 {
@@ -6,4 +8,6 @@ public interface IQueueService
 
     Task ReceiveMessagesAsync<TMessage>(Func<TMessage?, Task> handleMessage, Func<Exception, Task> handleException, CancellationToken cancellationToken = default)
         where TMessage : class;
+
+    Task<SendResponse> SendMessageAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default);
 }
