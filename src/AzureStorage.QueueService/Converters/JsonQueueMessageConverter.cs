@@ -16,7 +16,7 @@ internal class JsonQueueMessageConverter : IMessageConverter
 
     public TOutput? Convert<TOutput>(BinaryData input)
     {
-        if (input is not BinaryData) { Convert(input.ToString());}
+        if (input is not BinaryData) { Convert(input.ToString()); }
 
         try
         {
@@ -31,9 +31,9 @@ internal class JsonQueueMessageConverter : IMessageConverter
 
     public TOutput? Convert<TOutput>(string input)
     {
-        if (input is BinaryData)
+        if (IsBase64(input))
         {
-            byte[] byteData = System.Convert.FromBase64String(input);
+            var byteData = System.Convert.FromBase64String(input);
             input = Encoding.UTF8.GetString(byteData);
         }
 
@@ -52,5 +52,11 @@ internal class JsonQueueMessageConverter : IMessageConverter
     {
         var binaryData = new BinaryData(input);
         return binaryData;
+    }
+
+    private static bool IsBase64(string input)
+    {
+        Span<byte> buffer = new Span<byte>(new byte[input.Length]);
+        return System.Convert.TryFromBase64String(input, buffer, out _);
     }
 }
