@@ -134,5 +134,4 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         // act/assert
         await subject.Invoking(x => x.SendMessageAsync(testObject)).Should().NotThrowAsync();
     }
-
 }
