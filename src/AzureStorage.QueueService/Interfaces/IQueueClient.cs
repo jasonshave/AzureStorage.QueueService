@@ -2,7 +2,7 @@
 
 namespace JasonShave.AzureStorage.QueueService.Interfaces;
 
-public interface IQueueService
+public interface IQueueClient
 {
     Task<IEnumerable<TMessage>> PeekMessages<TMessage>(int numMessages, CancellationToken cancellationToken = default);
 

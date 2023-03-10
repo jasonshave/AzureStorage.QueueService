@@ -6,20 +6,16 @@ using Microsoft.Extensions.Logging;
 
 namespace JasonShave.AzureStorage.QueueService.Services;
 
-internal class AzureStorageQueueService : IQueueService
+public sealed class AzureStorageQueueClient
 {
+    private readonly IMessageConverter _messageConverter;
     private readonly QueueClient _queueClient;
-    private readonly IMessageConverter _queueMessageConverter;
-    private readonly ILogger<AzureStorageQueueService> _logger;
+    private readonly ILogger<AzureStorageQueueClient> _logger;
 
-    public AzureStorageQueueService(
-        IMessageConverter queueMessageConverter,
-        QueueClient queueClient,
-        ILogger<AzureStorageQueueService> logger)
+    internal AzureStorageQueueClient(IMessageConverter messageConverter, QueueClient queueClient, ILogger<AzureStorageQueueClient> logger)
     {
+        _messageConverter = messageConverter;
         _queueClient = queueClient;
-        _queueClient.CreateIfNotExists();
-        _queueMessageConverter = queueMessageConverter;
         _logger = logger;
     }
 
@@ -29,7 +25,7 @@ internal class AzureStorageQueueService : IQueueService
         PeekedMessage[] messages = await _queueClient.PeekMessagesAsync(numMessages, cancellationToken);
         foreach (var message in messages)
         {
-            var convertedMessage = _queueMessageConverter.Convert<TMessage>(message.MessageText);
+            var convertedMessage = _messageConverter.Convert<TMessage>(message.MessageText);
             if (convertedMessage is not null) results.Add(convertedMessage);
         }
 
@@ -49,7 +45,7 @@ internal class AzureStorageQueueService : IQueueService
 
             async Task ProcessMessage(QueueMessage queueMessage)
             {
-                var convertedMessage = _queueMessageConverter.Convert<TMessage>(queueMessage.MessageText);
+                var convertedMessage = _messageConverter.Convert<TMessage>(queueMessage.MessageText);
                 try
                 {
                     await handleMessage(convertedMessage);
@@ -72,7 +68,7 @@ internal class AzureStorageQueueService : IQueueService
 
     public async Task<SendResponse> SendMessageAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default)
     {
-        BinaryData binaryMessage = _queueMessageConverter.Convert(message);
+        BinaryData binaryMessage = _messageConverter.Convert(message);
         SendReceipt response = await _queueClient.SendMessageAsync(binaryMessage, null, null, cancellationToken);
 
         return new SendResponse(response.PopReceipt, response.MessageId);
