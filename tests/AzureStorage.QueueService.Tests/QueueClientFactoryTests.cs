@@ -111,7 +111,16 @@ public class QueueClientFactoryTests : BaseTestHost
             .CreateDefaultBuilder()
             .ConfigureServices(services =>
             {
-                services.AddAzureStorageQueueClient(x => Configuration.Bind(nameof(QueueClientSettings), x));
+                services.AddAzureStorageQueueClient(x =>
+                {
+                    x.AddClient("MyClient1", y => Configuration.Bind(nameof(QueueClientSettings), y));
+                    x.AddClient("MyClient2", y =>
+                    {
+                        y.ConnectionString = "[your_connection_string]";
+                        y.QueueName = "[your_queue_name]";
+                    });
+                    x.AddDefaultClient(y => Configuration.Bind(nameof(QueueClientSettings), y));
+                });
             })
             .Build();
 
