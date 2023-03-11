@@ -1,7 +1,5 @@
-﻿using Azure.Storage.Queues;
-using JasonShave.AzureStorage.QueueService.Converters;
+﻿using JasonShave.AzureStorage.QueueService.Converters;
 using JasonShave.AzureStorage.QueueService.Interfaces;
-using JasonShave.AzureStorage.QueueService.Models;
 using JasonShave.AzureStorage.QueueService.Services;
 using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;

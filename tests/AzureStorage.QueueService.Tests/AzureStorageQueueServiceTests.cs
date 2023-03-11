@@ -74,8 +74,8 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         // act/assert
         await subject.ReceiveMessagesAsync<TestObject>(HandleMessage, HandleException);
 
-        Task HandleMessage(TestObject? testObject) => Task.CompletedTask;
-        Task HandleException(Exception exception) => Task.CompletedTask;
+        ValueTask HandleMessage(TestObject? testObject) => ValueTask.CompletedTask;
+        ValueTask HandleException(Exception exception) => ValueTask.CompletedTask;
     }
 
     [Fact(DisplayName = "Peek messages returns message collection")]
@@ -105,12 +105,12 @@ public class AzureStorageQueueServiceTests : BaseTestHost
             x =>
             {
                 x.Message.Should().Be("Hello from Handler");
-                return Task.CompletedTask;
+                return ValueTask.CompletedTask;
             });
     }
 
     [Fact(DisplayName = "Can send message")]
-    public async Task Can_Send_Message()
+    public async ValueTask Can_Send_Message()
     {
         // arrange
         var fixture = new Fixture();
@@ -132,6 +132,6 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, mockLogger.Object);
 
         // act/assert
-        await subject.Invoking(x => x.SendMessageAsync(testObject)).Should().NotThrowAsync();
+        await subject.Invoking(async x => await x.SendMessageAsync(testObject)).Should().NotThrowAsync();
     }
 }

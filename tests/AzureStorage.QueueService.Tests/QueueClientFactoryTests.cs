@@ -32,7 +32,7 @@ public class QueueClientFactoryTests : BaseTestHost
         var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
         var mockQueueClient = new Mock<QueueClient>();
         mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        var subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
+        IQueueClientFactory subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
 
         // act
         var queueClient = subject.GetQueueClient("foo");
@@ -60,7 +60,7 @@ public class QueueClientFactoryTests : BaseTestHost
         var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
         var mockQueueClient = new Mock<QueueClient>();
         mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        var subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
+        IQueueClientFactory subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
 
         // act
         var queueClient1 = subject.GetQueueClient("foo");
@@ -92,7 +92,7 @@ public class QueueClientFactoryTests : BaseTestHost
         var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
         var mockQueueClient = new Mock<QueueClient>();
         mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        var subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
+        IQueueClientFactory subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
 
         // act
         var queueClient1 = subject.GetQueueClient("foo");
@@ -119,7 +119,7 @@ public class QueueClientFactoryTests : BaseTestHost
         var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
         var mockQueueClient = new Mock<QueueClient>();
         mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        var subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
+        IQueueClientFactory subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
 
         // act
         var queueClient = subject.GetQueueClient();
@@ -147,9 +147,9 @@ public class QueueClientFactoryTests : BaseTestHost
         var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
         var mockQueueClient = new Mock<QueueClient>();
         mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        var subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
+        IQueueClientFactory subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
 
         // act
-        subject.Invoking(x => x.GetQueueClient("bar")).Should().Throw<ApplicationException>();
+        subject.Invoking(x => x.GetQueueClient("bar")).Should().Throw<ApplicationException>(because: "The client name wasn't registered");
     }
 }

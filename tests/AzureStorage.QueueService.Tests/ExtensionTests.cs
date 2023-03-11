@@ -17,11 +17,11 @@ public class ExtensionTests
                 .AddJsonFile("testConfiguration.json", false, true);
         }).ConfigureServices((hostContext, services) =>
         {
-            services.AddAzureStorageQueueServices(options =>
+            services.AddAzureStorageQueueClient(x => x.AddDefaultClient(y =>
             {
-                options.ConnectionString = hostContext.Configuration["QueueClientSettings:ConnectionString"];
-                options.QueueName = hostContext.Configuration["QueueClientSettings:QueueName"];
-            });
+                y.ConnectionString = "localhost";
+                y.QueueName = "foo";
+            }));
         }).Build();
 
         host.Dispose();
@@ -37,7 +37,7 @@ public class ExtensionTests
                 .AddJsonFile("testConfiguration.json", false, true);
         }).ConfigureServices((hostContext, services) =>
         {
-            services.AddAzureStorageQueueServices(options => hostContext.Configuration.Bind(nameof(QueueClientSettings), options));
+            services.AddAzureStorageQueueClient(x => x.AddDefaultClient(y => hostContext.Configuration.Bind(nameof(QueueClientSettings), y)));
         }).Build();
 
         host.Dispose();
@@ -53,9 +53,7 @@ public class ExtensionTests
                 .AddJsonFile("testConfiguration.json", false, true);
         }).ConfigureServices((hostContext, services) =>
         {
-            services.AddAzureStorageQueueServices(
-                options => hostContext.Configuration.Bind(nameof(QueueClientSettings), options),
-                serializationOptions => serializationOptions.AllowTrailingCommas = true);
+            services.AddAzureStorageQueueClient(x => x.AddDefaultClient(y => hostContext.Configuration.Bind(nameof(QueueClientSettings), y)));
         }).Build();
 
         host.Dispose();

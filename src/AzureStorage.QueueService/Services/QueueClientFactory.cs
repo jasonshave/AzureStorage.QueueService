@@ -13,7 +13,7 @@ internal sealed class QueueClientFactory : IQueueClientFactory
     private readonly IServiceProvider _services;
     private readonly QueueClientSettingsRegistry _registry;
     private readonly IQueueClientBuilder _queueClientBuilder;
-    
+
     public QueueClientFactory(IServiceProvider services, QueueClientSettingsRegistry registry, IQueueClientBuilder queueClientBuilder)
     {
         _services = services;

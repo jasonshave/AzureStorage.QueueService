@@ -3,7 +3,7 @@ using JasonShave.AzureStorage.QueueService.Models;
 
 namespace JasonShave.AzureStorage.QueueService.Interfaces;
 
-public interface IQueueClientBuilder
+internal interface IQueueClientBuilder
 {
     QueueClient CreateClient(QueueClientSettings settings);
 

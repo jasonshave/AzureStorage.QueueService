@@ -19,7 +19,7 @@ public sealed class AzureStorageQueueClient
         _logger = logger;
     }
 
-    public async Task<IEnumerable<TMessage>> PeekMessages<TMessage>(int numMessages, CancellationToken cancellationToken = default)
+    public async ValueTask<IEnumerable<TMessage>> PeekMessages<TMessage>(int numMessages, CancellationToken cancellationToken = default)
     {
         var results = new List<TMessage>();
         PeekedMessage[] messages = await _queueClient.PeekMessagesAsync(numMessages, cancellationToken);
@@ -32,10 +32,10 @@ public sealed class AzureStorageQueueClient
         return results;
     }
 
-    public async Task ReceiveMessagesAsync<TMessage>(Func<TMessage?, Task> handleMessage, Func<Exception, Task> handleException, CancellationToken cancellationToken = default)
+    public async ValueTask ReceiveMessagesAsync<TMessage>(Func<TMessage?, ValueTask> handleMessage, Func<Exception, ValueTask> handleException, CancellationToken cancellationToken = default, int numMessages = 1)
         where TMessage : class
     {
-        QueueMessage[] receivedMessages = await _queueClient.ReceiveMessagesAsync(cancellationToken);
+        QueueMessage[] receivedMessages = await _queueClient.ReceiveMessagesAsync(numMessages, null, cancellationToken);
 
         if (receivedMessages.Any())
         {
@@ -66,7 +66,7 @@ public sealed class AzureStorageQueueClient
         }
     }
 
-    public async Task<SendResponse> SendMessageAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default)
+    public async ValueTask<SendResponse> SendMessageAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default)
     {
         BinaryData binaryMessage = _messageConverter.Convert(message);
         SendReceipt response = await _queueClient.SendMessageAsync(binaryMessage, null, null, cancellationToken);
