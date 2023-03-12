@@ -66,7 +66,7 @@ public class JsonQueueMessageConverterTests
         // act
         BinaryData binaryData = subject.Convert(testObject);
         TestObject? convertedTestObject = subject.Convert<TestObject>(binaryData);
-        
+
         // assert
         testObject.Should().BeEquivalentTo(convertedTestObject);
     }

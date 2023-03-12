@@ -6,40 +6,36 @@ using Microsoft.Extensions.Logging;
 
 namespace JasonShave.AzureStorage.QueueService.Services;
 
-internal class AzureStorageQueueService : IQueueService
+public sealed class AzureStorageQueueClient
 {
+    private readonly IMessageConverter _messageConverter;
     private readonly QueueClient _queueClient;
-    private readonly IMessageConverter _queueMessageConverter;
-    private readonly ILogger<AzureStorageQueueService> _logger;
+    private readonly ILogger<AzureStorageQueueClient> _logger;
 
-    public AzureStorageQueueService(
-        IMessageConverter queueMessageConverter,
-        QueueClient queueClient,
-        ILogger<AzureStorageQueueService> logger)
+    internal AzureStorageQueueClient(IMessageConverter messageConverter, QueueClient queueClient, ILogger<AzureStorageQueueClient> logger)
     {
+        _messageConverter = messageConverter;
         _queueClient = queueClient;
-        _queueClient.CreateIfNotExists();
-        _queueMessageConverter = queueMessageConverter;
         _logger = logger;
     }
 
-    public async Task<IEnumerable<TMessage>> PeekMessages<TMessage>(int numMessages, CancellationToken cancellationToken = default)
+    public async ValueTask<IEnumerable<TMessage>> PeekMessages<TMessage>(int numMessages, CancellationToken cancellationToken = default)
     {
         var results = new List<TMessage>();
         PeekedMessage[] messages = await _queueClient.PeekMessagesAsync(numMessages, cancellationToken);
         foreach (var message in messages)
         {
-            var convertedMessage = _queueMessageConverter.Convert<TMessage>(message.MessageText);
+            var convertedMessage = _messageConverter.Convert<TMessage>(message.MessageText);
             if (convertedMessage is not null) results.Add(convertedMessage);
         }
 
         return results;
     }
 
-    public async Task ReceiveMessagesAsync<TMessage>(Func<TMessage?, Task> handleMessage, Func<Exception, Task> handleException, CancellationToken cancellationToken = default)
+    public async ValueTask ReceiveMessagesAsync<TMessage>(Func<TMessage?, ValueTask> handleMessage, Func<Exception, ValueTask> handleException, CancellationToken cancellationToken = default, int numMessages = 1)
         where TMessage : class
     {
-        QueueMessage[] receivedMessages = await _queueClient.ReceiveMessagesAsync(cancellationToken);
+        QueueMessage[] receivedMessages = await _queueClient.ReceiveMessagesAsync(numMessages, null, cancellationToken);
 
         if (receivedMessages.Any())
         {
@@ -49,7 +45,7 @@ internal class AzureStorageQueueService : IQueueService
 
             async Task ProcessMessage(QueueMessage queueMessage)
             {
-                var convertedMessage = _queueMessageConverter.Convert<TMessage>(queueMessage.MessageText);
+                var convertedMessage = _messageConverter.Convert<TMessage>(queueMessage.MessageText);
                 try
                 {
                     await handleMessage(convertedMessage);
@@ -70,9 +66,9 @@ internal class AzureStorageQueueService : IQueueService
         }
     }
 
-    public async Task<SendResponse> SendMessageAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default)
+    public async ValueTask<SendResponse> SendMessageAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default)
     {
-        BinaryData binaryMessage = _queueMessageConverter.Convert(message);
+        BinaryData binaryMessage = _messageConverter.Convert(message);
         SendReceipt response = await _queueClient.SendMessageAsync(binaryMessage, null, null, cancellationToken);
 
         return new SendResponse(response.PopReceipt, response.MessageId);
