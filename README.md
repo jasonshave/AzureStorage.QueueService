@@ -3,7 +3,7 @@
 [![.NET](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/dotnet.yml/badge.svg)](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/dotnet.yml)
 [![Nuget](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/nuget.yml/badge.svg)](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/nuget.yml)
 
-This project produces a library which abstracts away the complexities of using the Azure Storage account's "queue" feature targeting .NET 6 and higher.
+This project abstracts away the complexities of using the Azure Storage account's queue feature targeting .NET 6 and higher.
 
 ## Pre-requisites
 
