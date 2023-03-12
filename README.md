@@ -157,12 +157,12 @@ The following example shows the .NET "Worker Service" template where the class u
 1. Inject the `IQueueService` interface and use as follows:
 
     ```csharp
-    public class Receiver : IHostedService
+    public class MySubscriber : IHostedService
     {
         private readonly AzureStorageQueueClient _queueClient;
         private readonly IMyMessageHandler _myMessageHandler; // see optional handler below
     
-        public Receiver(IQueueClientFactory queueClientFactory, IMyMessageHandler myMessageHandler)
+        public MySubscriber(IQueueClientFactory queueClientFactory, IMyMessageHandler myMessageHandler)
         {
             _queueClient = queueClientFactory.GetQueueClient();
             _myMessageHandler = myMessageHandler;
@@ -180,6 +180,14 @@ The following example shows the .NET "Worker Service" template where the class u
         }
     }
     ```
+
+### Handling multiple messages
+
+The library allows you to pull multiple messages by specifying the `maxMessage` count as an integer in the `ReceiveMessagesAsync<T>()` method. These are sent to the handler as individual messages but pulled from the queue as a batch the consuming application would hold a lock on for the default duration used in the Azure Storage Queue library.
+
+```csharp
+await _queueClient.ReceiveMessagesAsync<MyMessage>(HandleMessage, HandleException, cancellationToken, 10);
+```
 
 ## License
 
