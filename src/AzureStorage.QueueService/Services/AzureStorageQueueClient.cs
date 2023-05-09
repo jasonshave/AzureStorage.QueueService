@@ -50,7 +50,7 @@ public sealed class AzureStorageQueueClient
                 {
                     await handleMessage(convertedMessage);
 
-                    _logger.LogInformation("Removing queue message id: {0}", queueMessage.MessageId);
+                    _logger.LogInformation("Processed message successfully, removing queue message id: {0}", queueMessage.MessageId);
                     await _queueClient.DeleteMessageAsync(queueMessage.MessageId, queueMessage.PopReceipt, cancellationToken);
                 }
                 catch (Exception e)
