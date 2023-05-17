@@ -43,7 +43,7 @@ public sealed class AzureStorageQueueClient
     /// <param name="numMessages"></param>
     /// <returns></returns>
     /// <exception cref="Exception"></exception>
-    public async ValueTask ReceiveMessagesAsync<TMessage>(Func<TMessage?, ValueTask> handleMessage, Func<Exception, ValueTask> handleException, CancellationToken cancellationToken = default, int numMessages = 1)
+    public async ValueTask ReceiveMessagesAsync<TMessage>(Func<TMessage?, ValueTask> handleMessage, Func<Exception, ValueTask> handleException, int numMessages = 1, CancellationToken cancellationToken = default)
         where TMessage : class
     {
         QueueMessage[] receivedMessages = await _queueClient.ReceiveMessagesAsync(numMessages, null, cancellationToken);

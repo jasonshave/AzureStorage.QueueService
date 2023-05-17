@@ -15,7 +15,7 @@ public class ExtensionTests
         {
             builder.SetBasePath(Environment.CurrentDirectory)
                 .AddJsonFile("testConfiguration.json", false, true);
-        }).ConfigureServices((hostContext, services) =>
+        }).ConfigureServices(services =>
         {
             services.AddAzureStorageQueueClient(x => x.AddDefaultClient(y =>
             {
