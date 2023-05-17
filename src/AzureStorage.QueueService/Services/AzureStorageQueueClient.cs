@@ -45,9 +45,9 @@ public sealed class AzureStorageQueueClient
 
             async Task ProcessMessage(QueueMessage queueMessage)
             {
-                var convertedMessage = _messageConverter.Convert<TMessage>(queueMessage.Body);
                 try
                 {
+                    var convertedMessage = _messageConverter.Convert<TMessage>(queueMessage.MessageText);
                     await handleMessage(convertedMessage);
 
                     _logger.LogInformation("Processed message successfully, removing queue message id: {0}", queueMessage.MessageId);
