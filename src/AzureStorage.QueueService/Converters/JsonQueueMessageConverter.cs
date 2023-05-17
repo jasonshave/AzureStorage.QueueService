@@ -16,11 +16,6 @@ internal class JsonQueueMessageConverter : IMessageConverter
 
     public TOutput? Convert<TOutput>(BinaryData input)
     {
-        if (input is not BinaryData)
-        {
-            Convert(input.ToString());
-        }
-
         try
         {
             var convertedMessage = JsonSerializer.Deserialize<TOutput>(input, _serializerOptions);
