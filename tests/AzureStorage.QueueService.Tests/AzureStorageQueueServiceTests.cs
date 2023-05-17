@@ -43,7 +43,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         var subject = new AzureStorageQueueClient(mockMessageConverter.Object, queueClient.Object, mockLogger.Object);
 
         // act
-        var messages = await subject.PeekMessages<TestObject>(It.IsAny<int>());
+        var messages = await subject.PeekMessagesAsync<TestObject>(It.IsAny<int>());
 
         // assert
         messages.Should().NotBeEmpty();

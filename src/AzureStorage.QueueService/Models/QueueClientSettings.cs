@@ -5,6 +5,8 @@ namespace JasonShave.AzureStorage.QueueService.Models;
 [ExcludeFromCodeCoverage]
 public class QueueClientSettings
 {
+    public const string SectionName = "AzureStorageQueueClientSettings";
+
     public string ConnectionString { get; set; } = default!;
 
     public string QueueName { get; set; } = default!;

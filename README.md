@@ -35,13 +35,13 @@ You will need to create an Azure Storage account in the Azure portal using a uni
     }
     ```
 
-    >NOTE: You can create your queue in advance or allow the library to create it during runtime by setting the `CreateIfNotExists` property to `true`.
+3. You can create your queue in advance or allow the library to create it during runtime by setting the `CreateIfNotExists` property to `true`.
 
 ## Configure dependency injection
 
 The library has been updated to handle both a default client and a named-client experience similar to how the .NET `IHttpClientFactory` works. This section outlines both ways you can configure dependency injection to either use the default client or a named client in case you have more than one queue to pull from.
 
-### Default client experience
+### Add the default client
 
 Use the `AddAzureStorageQueueClient()` method and specify the settings for the `ConnectionString` and the `QueueName` or use the `IConfiguration` binder to bind with a JSON configuration as shown above.
 
@@ -60,7 +60,7 @@ services.AddAzureStorageQueueClient(x =>
     x.AddDefaultClient(y => Configuration.Bind(nameof(QueueClientSettings), y)));
 ```
 
-### Named clients
+### Add a named client
 
 Use the `AddAzureStorageQueueClient()` method with the `AddClient()` method to add and configure different queue clients which can be obtained using the `IQueueClientFactory` and the `GetQueueClient()` method.
 
@@ -127,7 +127,7 @@ public class MyClass
 
 ## Sending messages to an Azure storage account queue
 
-The following example shows the .NET Worker Service template where the class uses the `IHostedService` interface to run a particular code block repeatedly. The application will send the payload to the queue every five seconds.
+The following example shows the .NET Worker Service template where the class uses the `IHostedService` interface to send a message every five seconds.
 
 1. Inject the `IQueueClientFactory` interface and use as follows:
 
@@ -152,9 +152,9 @@ The following example shows the .NET Worker Service template where the class use
 
 ## Receiving and handling messages from an Azure storage account queue
 
-The following example shows the .NET "Worker Service" template where the class uses the `IHostedService` interface to run a particular code block repeatedly. The application will receive the payload from the queue repeatedly.
+The following example shows the .NET Worker Service template where the class uses the `IHostedService` interface to run a particular code block repeatedly. The application will receive the payload from the queue repeatedly.
 
-1. Inject the `IQueueService` interface and use as follows:
+1. Inject the `IQueueClientFactory` interface and use as follows:
 
     ```csharp
     public class MySubscriber : IHostedService
@@ -164,6 +164,7 @@ The following example shows the .NET "Worker Service" template where the class u
     
         public MySubscriber(IQueueClientFactory queueClientFactory, IMyMessageHandler myMessageHandler)
         {
+            // get the default queue client
             _queueClient = queueClientFactory.GetQueueClient();
             _myMessageHandler = myMessageHandler;
         }

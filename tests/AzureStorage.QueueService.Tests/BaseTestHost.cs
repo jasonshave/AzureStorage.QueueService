@@ -12,7 +12,6 @@ namespace JasonShave.AzureStorage.QueueService.Tests
                 .SetBasePath(Environment.CurrentDirectory)
                 .AddJsonFile("testConfiguration.json", false, true)
                 .Build();
-
         }
     }
 }
