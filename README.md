@@ -144,7 +144,7 @@ The following example shows the .NET Worker Service template where the class use
             {
                 var myMessage = new MyMessage("Test");
                 await _queueClient.SendMessageAsync<MyMessage>(myMessage, cancellationToken);
-                Task.Delay(5000);
+                await Task.Delay(5000);
             }
         }    
     }
@@ -177,6 +177,7 @@ The following example shows the .NET Worker Service template where the class use
                     message => _myMessageHandler.HandleAsync(message),
                     exception => _myMessageHandler.HandleExceptionAsync(exception),
                     cancellationToken);
+                await Task.Delay(1000);
             }
         }
     }
