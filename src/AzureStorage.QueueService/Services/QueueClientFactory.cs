@@ -9,7 +9,6 @@ internal sealed class QueueClientFactory : IQueueClientFactory
 {
     private readonly Dictionary<string, AzureStorageQueueClient> _namedClients = new();
     private AzureStorageQueueClient? _defaultClient;
-
     private readonly IServiceProvider _services;
     private readonly QueueClientSettingsRegistry _registry;
     private readonly IQueueClientBuilder _queueClientBuilder;
@@ -50,8 +49,6 @@ internal sealed class QueueClientFactory : IQueueClientFactory
 
         return client;
     }
-
-    public AzureStorageQueueClient GetQueueClient() => GetQueueClient(null);
 
     private AzureStorageQueueClient Create(QueueClientSettings settings)
     {

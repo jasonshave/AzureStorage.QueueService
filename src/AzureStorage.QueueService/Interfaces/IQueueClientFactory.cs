@@ -4,7 +4,5 @@ namespace JasonShave.AzureStorage.QueueService.Interfaces;
 
 public interface IQueueClientFactory
 {
-    AzureStorageQueueClient GetQueueClient(string clientName);
-
-    AzureStorageQueueClient GetQueueClient();
+    AzureStorageQueueClient GetQueueClient(string? clientName = null);
 }
