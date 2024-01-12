@@ -12,7 +12,6 @@ public class QueueClientSettingsBuilder
         settings(queueClientSettings);
 
         SettingsRegistry.ClientSettings.Add(clientName, queueClientSettings);
-        SettingsRegistry.DefaultClientSettings = queueClientSettings;
 
         return this;
     }
