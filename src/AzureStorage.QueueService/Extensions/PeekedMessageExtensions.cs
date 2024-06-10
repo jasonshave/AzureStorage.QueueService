@@ -7,14 +7,9 @@ internal static class PeekedMessageExtensions
 {
     public static IEnumerable<TMessage> Convert<TMessage>(this PeekedMessage[] peekedMessages, IMessageConverter messageConverter)
     {
-        var results = new List<TMessage>();
-
-        foreach (var message in peekedMessages)
+        foreach (var convertedMessage in peekedMessages.Select(message => messageConverter.Convert<TMessage>(message.Body)))
         {
-            var convertedMessage = messageConverter.Convert<TMessage>(message.MessageText);
-            if (convertedMessage is not null) results.Add(convertedMessage);
+            if (convertedMessage is not null) yield return convertedMessage;
         }
-
-        return results;
     }
 }
