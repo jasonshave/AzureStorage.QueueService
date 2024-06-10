@@ -20,16 +20,8 @@ internal sealed class QueueClientFactory : IQueueClientFactory
         _queueClientBuilder = queueClientBuilder;
     }
 
-    public AzureStorageQueueClient GetQueueClient(string? clientName)
+    public AzureStorageQueueClient GetQueueClient(string clientName)
     {
-        if (clientName is null)
-        {
-            // use default client
-            if (_defaultClient is not null) return _defaultClient;
-            _defaultClient = Create(_registry.DefaultClientSettings);
-            return _defaultClient;
-        }
-
         // try named client
         _namedClients.TryGetValue(clientName, out var azureStorageQueueClient);
         if (azureStorageQueueClient is not null)
@@ -48,6 +40,14 @@ internal sealed class QueueClientFactory : IQueueClientFactory
         _namedClients.TryAdd(clientName, client);
 
         return client;
+    }
+
+    public AzureStorageQueueClient GetQueueClient()
+    {
+        // use default client
+        if (_defaultClient is not null) return _defaultClient;
+        _defaultClient = Create(_registry.DefaultClientSettings);
+        return _defaultClient;
     }
 
     private AzureStorageQueueClient Create(QueueClientSettings settings)
