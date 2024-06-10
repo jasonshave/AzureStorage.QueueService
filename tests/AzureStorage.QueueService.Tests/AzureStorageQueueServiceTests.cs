@@ -74,8 +74,8 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         // act/assert
         await subject.ReceiveMessagesAsync<TestObject>(HandleMessage, HandleException);
 
-        ValueTask HandleMessage(TestObject? testObject, IDictionary<string, string> metadata) => ValueTask.CompletedTask;
-        ValueTask HandleException(Exception exception) => ValueTask.CompletedTask;
+        ValueTask HandleMessage(TestObject? testObject, IDictionary<string, string>? metadata) => ValueTask.CompletedTask;
+        ValueTask HandleException(Exception exception, IDictionary<string, string>? metadata) => ValueTask.CompletedTask;
     }
 
     [Fact(DisplayName = "Peek messages returns message collection")]
@@ -102,7 +102,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         // act/assert
         await subject.ReceiveMessagesAsync<TestObject>(
             (message, metadata) => throw new Exception("Hello from Handler"),
-            exception =>
+            (exception, metadata) =>
             {
                 exception.Message.Should().Be("Hello from Handler");
                 return ValueTask.CompletedTask;
