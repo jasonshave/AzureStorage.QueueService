@@ -110,7 +110,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
     }
 
     [Fact(DisplayName = "Can send message")]
-    public async ValueTask Can_Send_Message()
+    public async Task Can_Send_Message()
     {
         // arrange
         var fixture = new Fixture();
