@@ -74,8 +74,8 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         // act/assert
         await subject.ReceiveMessagesAsync<TestObject>(HandleMessage, HandleException);
 
-        ValueTask HandleMessage(TestObject? testObject) => ValueTask.CompletedTask;
-        ValueTask HandleException(Exception exception) => ValueTask.CompletedTask;
+        ValueTask HandleMessage(TestObject? testObject, IDictionary<string, string>? metadata) => ValueTask.CompletedTask;
+        ValueTask HandleException(Exception exception, IDictionary<string, string>? metadata) => ValueTask.CompletedTask;
     }
 
     [Fact(DisplayName = "Peek messages returns message collection")]
@@ -101,16 +101,16 @@ public class AzureStorageQueueServiceTests : BaseTestHost
 
         // act/assert
         await subject.ReceiveMessagesAsync<TestObject>(
-            _ => throw new Exception("Hello from Handler"),
-            x =>
+            (message, metadata) => throw new Exception("Hello from Handler"),
+            (exception, metadata) =>
             {
-                x.Message.Should().Be("Hello from Handler");
+                exception.Message.Should().Be("Hello from Handler");
                 return ValueTask.CompletedTask;
             });
     }
 
     [Fact(DisplayName = "Can send message")]
-    public async ValueTask Can_Send_Message()
+    public async Task Can_Send_Message()
     {
         // arrange
         var fixture = new Fixture();
