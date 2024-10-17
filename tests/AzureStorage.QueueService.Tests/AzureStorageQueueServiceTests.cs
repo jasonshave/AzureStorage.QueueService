@@ -7,6 +7,7 @@ using JasonShave.AzureStorage.QueueService.Interfaces;
 using JasonShave.AzureStorage.QueueService.Models;
 using JasonShave.AzureStorage.QueueService.Services;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
 
@@ -15,9 +16,15 @@ namespace JasonShave.AzureStorage.QueueService.Tests;
 public class AzureStorageQueueServiceTests : BaseTestHost
 {
     private readonly QueueClientSettings _queueClientSettings;
+    private readonly IServiceProvider _serviceProvider;
 
     public AzureStorageQueueServiceTests()
     {
+        var services = new ServiceCollection();
+        services.AddLogging();
+
+        _serviceProvider = services.BuildServiceProvider();
+        
         _queueClientSettings = new();
         Configuration.Bind(nameof(QueueClientSettings), _queueClientSettings);
     }
@@ -32,15 +39,15 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         PeekedMessage[] peekedMessages = { peekedMessage };
         var response = Response.FromValue(peekedMessages, mockResponse);
 
-        var queueClient = new Mock<QueueClient>();
-        queueClient.Setup(x => x.PeekMessagesAsync(It.IsAny<int>(), CancellationToken.None)).ReturnsAsync(response);
+        var mockQueueClient = new Mock<QueueClient>();
+        mockQueueClient.Setup(x => x.PeekMessagesAsync(It.IsAny<int>(), CancellationToken.None)).ReturnsAsync(response);
 
         var mockMessageConverter = new Mock<IMessageConverter>();
         mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<string>())).Returns(fixture.Create<TestObject>());
 
-        var mockLogger = new Mock<ILoggerFactory>();
+        var loggerFactory = _serviceProvider.GetRequiredService<ILoggerFactory>();
 
-        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, queueClient.Object, mockLogger.Object);
+        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory);
 
         // act
         var messages = await subject.PeekMessagesAsync<TestObject>(It.IsAny<int>());
@@ -67,9 +74,9 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         var mockMessageConverter = new Mock<IMessageConverter>();
         mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<string>())).Returns(fixture.Create<TestObject>());
 
-        var mockLogger = new Mock<ILoggerFactory>();
+        var loggerFactory = _serviceProvider.GetRequiredService<ILoggerFactory>();
 
-        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, mockLogger.Object);
+        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory);
 
         // act/assert
         await subject.ReceiveMessagesAsync<TestObject>(HandleMessage, HandleException);
@@ -95,9 +102,9 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         var mockMessageConverter = new Mock<IMessageConverter>();
         mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<string>())).Returns(fixture.Create<TestObject>());
 
-        var mockLogger = new Mock<ILoggerFactory>();
+        var loggerFactory = _serviceProvider.GetRequiredService<ILoggerFactory>();
 
-        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, mockLogger.Object);
+        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory);
 
         // act/assert
         await subject.ReceiveMessagesAsync<TestObject>(
@@ -127,9 +134,9 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         var response = Response.FromValue(sendReceipt, mockResponse);
         mockQueueClient.Setup(x => x.SendMessageAsync(It.IsAny<BinaryData>(), null, null, CancellationToken.None)).ReturnsAsync(response);
 
-        var mockLogger = new Mock<ILoggerFactory>();
+        var loggerFactory = _serviceProvider.GetRequiredService<ILoggerFactory>();
 
-        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, mockLogger.Object);
+        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory);
 
         // act/assert
         await subject.Invoking(async x => await x.SendMessageAsync(testObject)).Should().NotThrowAsync();
