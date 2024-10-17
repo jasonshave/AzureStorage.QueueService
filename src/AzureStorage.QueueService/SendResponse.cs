@@ -1,3 +1,3 @@
-﻿namespace JasonShave.AzureStorage.QueueService.Models;
+﻿namespace AzureStorage.QueueService;
 
 public record SendResponse(string Receipt, string MessageId);

@@ -1,6 +1,6 @@
 ﻿using System.Diagnostics.CodeAnalysis;
 
-namespace JasonShave.AzureStorage.QueueService.Models;
+namespace AzureStorage.QueueService;
 
 [ExcludeFromCodeCoverage]
 public class QueueClientSettings

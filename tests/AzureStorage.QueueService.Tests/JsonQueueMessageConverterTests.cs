@@ -1,12 +1,10 @@
-﻿using AutoFixture;
+﻿using System.Text;
+using System.Text.Json;
+using AutoFixture;
 using Azure.Storage.Queues.Models;
 using FluentAssertions;
-using JasonShave.AzureStorage.QueueService.Converters;
-using JasonShave.AzureStorage.QueueService.Exceptions;
-using System.Text;
-using System.Text.Json;
 
-namespace JasonShave.AzureStorage.QueueService.Tests;
+namespace AzureStorage.QueueService.Tests;
 
 public class JsonQueueMessageConverterTests
 {

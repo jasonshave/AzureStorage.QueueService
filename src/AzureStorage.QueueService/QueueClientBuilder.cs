@@ -1,8 +1,6 @@
 ﻿using Azure.Storage.Queues;
-using JasonShave.AzureStorage.QueueService.Interfaces;
-using JasonShave.AzureStorage.QueueService.Models;
 
-namespace JasonShave.AzureStorage.QueueService.Services;
+namespace AzureStorage.QueueService;
 
 internal class QueueClientBuilder : IQueueClientBuilder
 {

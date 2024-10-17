@@ -1,7 +1,6 @@
 ﻿using Azure.Storage.Queues.Models;
-using JasonShave.AzureStorage.QueueService.Interfaces;
 
-namespace JasonShave.AzureStorage.QueueService.Extensions;
+namespace AzureStorage.QueueService;
 
 internal static class PeekedMessageExtensions
 {

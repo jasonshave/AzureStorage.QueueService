@@ -1,6 +1,4 @@
-﻿using JasonShave.AzureStorage.QueueService.Models;
-
-namespace JasonShave.AzureStorage.QueueService.Services;
+﻿namespace AzureStorage.QueueService;
 
 public class QueueClientSettingsBuilder
 {

@@ -1,9 +1,7 @@
-﻿using JasonShave.AzureStorage.QueueService.Extensions;
-using JasonShave.AzureStorage.QueueService.Models;
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 
-namespace JasonShave.AzureStorage.QueueService.Tests;
+namespace AzureStorage.QueueService.Tests;
 
 public class ExtensionTests
 {

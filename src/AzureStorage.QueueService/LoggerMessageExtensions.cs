@@ -1,6 +1,6 @@
 ﻿using Microsoft.Extensions.Logging;
 
-namespace JasonShave.AzureStorage.QueueService.Extensions;
+namespace AzureStorage.QueueService;
 
 public static partial class LoggerMessageExtensions
 {

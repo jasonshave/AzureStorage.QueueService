@@ -3,15 +3,12 @@ using Azure;
 using Azure.Storage.Queues;
 using Azure.Storage.Queues.Models;
 using FluentAssertions;
-using JasonShave.AzureStorage.QueueService.Interfaces;
-using JasonShave.AzureStorage.QueueService.Models;
-using JasonShave.AzureStorage.QueueService.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
 
-namespace JasonShave.AzureStorage.QueueService.Tests;
+namespace AzureStorage.QueueService.Tests;
 
 public class AzureStorageQueueServiceTests : BaseTestHost
 {
@@ -24,7 +21,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         services.AddLogging();
 
         _serviceProvider = services.BuildServiceProvider();
-        
+
         _queueClientSettings = new();
         Configuration.Bind(nameof(QueueClientSettings), _queueClientSettings);
     }
