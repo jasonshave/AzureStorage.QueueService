@@ -1,11 +1,8 @@
 ﻿using Azure.Storage.Queues;
 using Azure.Storage.Queues.Models;
-using JasonShave.AzureStorage.QueueService.Extensions;
-using JasonShave.AzureStorage.QueueService.Interfaces;
-using JasonShave.AzureStorage.QueueService.Models;
 using Microsoft.Extensions.Logging;
 
-namespace JasonShave.AzureStorage.QueueService.Services;
+namespace AzureStorage.QueueService;
 
 public sealed class AzureStorageQueueClient
 {
@@ -26,10 +23,10 @@ public sealed class AzureStorageQueueClient
     public async ValueTask ClearMessagesAsync(CancellationToken cancellationToken = default) =>
         await _queueClient.ClearMessagesAsync(cancellationToken);
 
-    public async ValueTask<IEnumerable<TMessage>> PeekMessagesAsync<TMessage>(int numMessages, CancellationToken cancellationToken = default) => 
+    public async ValueTask<IEnumerable<TMessage>> PeekMessagesAsync<TMessage>(int numMessages, CancellationToken cancellationToken = default) =>
         (await _queueClient.PeekMessagesAsync(numMessages, cancellationToken)).Value.Convert<TMessage>(_messageConverter);
 
-    public IEnumerable<TMessage> PeekMessages<TMessage>(int numMessages, CancellationToken cancellationToken = default) => 
+    public IEnumerable<TMessage> PeekMessages<TMessage>(int numMessages, CancellationToken cancellationToken = default) =>
         _queueClient.PeekMessages(numMessages, cancellationToken).Value.Convert<TMessage>(_messageConverter);
 
     /// <summary>

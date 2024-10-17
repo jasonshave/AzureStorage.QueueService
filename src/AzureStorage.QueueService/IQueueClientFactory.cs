@@ -1,6 +1,4 @@
-﻿using JasonShave.AzureStorage.QueueService.Services;
-
-namespace JasonShave.AzureStorage.QueueService.Interfaces;
+﻿namespace AzureStorage.QueueService;
 
 public interface IQueueClientFactory
 {

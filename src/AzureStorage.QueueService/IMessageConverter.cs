@@ -1,4 +1,4 @@
-﻿namespace JasonShave.AzureStorage.QueueService.Interfaces;
+﻿namespace AzureStorage.QueueService;
 
 internal interface IMessageConverter
 {

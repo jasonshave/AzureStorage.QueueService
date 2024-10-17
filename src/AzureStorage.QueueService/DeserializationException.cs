@@ -1,4 +1,4 @@
-﻿namespace JasonShave.AzureStorage.QueueService.Exceptions;
+﻿namespace AzureStorage.QueueService;
 
 public class DeserializationException : Exception
 {

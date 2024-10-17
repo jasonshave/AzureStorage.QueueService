@@ -1,9 +1,7 @@
-﻿using JasonShave.AzureStorage.QueueService.Exceptions;
-using JasonShave.AzureStorage.QueueService.Interfaces;
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 
-namespace JasonShave.AzureStorage.QueueService.Converters;
+namespace AzureStorage.QueueService;
 
 internal class JsonQueueMessageConverter : IMessageConverter
 {

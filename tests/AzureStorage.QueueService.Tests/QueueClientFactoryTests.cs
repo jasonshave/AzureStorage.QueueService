@@ -1,15 +1,11 @@
 ﻿using Azure.Storage.Queues;
 using FluentAssertions;
-using JasonShave.AzureStorage.QueueService.Extensions;
-using JasonShave.AzureStorage.QueueService.Interfaces;
-using JasonShave.AzureStorage.QueueService.Models;
-using JasonShave.AzureStorage.QueueService.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
 
-namespace JasonShave.AzureStorage.QueueService.Tests;
+namespace AzureStorage.QueueService.Tests;
 
 public class QueueClientFactoryTests : BaseTestHost
 {
@@ -19,7 +15,7 @@ public class QueueClientFactoryTests : BaseTestHost
         // arrange
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings",  y)));
+        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y)));
 
         var serviceProvider = services.BuildServiceProvider();
 
@@ -44,8 +40,8 @@ public class QueueClientFactoryTests : BaseTestHost
         // arrange
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings",  y)));
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings",  y)));
+        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y)));
+        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y)));
 
         var serviceProvider = services.BuildServiceProvider();
 
@@ -70,7 +66,7 @@ public class QueueClientFactoryTests : BaseTestHost
         // arrange        
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings",  y)));
+        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y)));
 
         var serviceProvider = services.BuildServiceProvider();
 
@@ -98,10 +94,10 @@ public class QueueClientFactoryTests : BaseTestHost
         // arrange
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddAzureStorageQueueClient(options => 
+        services.AddAzureStorageQueueClient(options =>
         {
-            options.AddClient("foo", y => Configuration.Bind("QueueClientSettings",  y));
-            options.AddClient("bar", y => Configuration.Bind("QueueClientSettings",  y));
+            options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y));
+            options.AddClient("bar", y => Configuration.Bind("QueueClientSettings", y));
         });
 
         var serviceProvider = services.BuildServiceProvider();
@@ -129,7 +125,7 @@ public class QueueClientFactoryTests : BaseTestHost
         // arrange
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddDefaultClient(y => Configuration.Bind("QueueClientSettings",  y)));
+        services.AddAzureStorageQueueClient(options => options.AddDefaultClient(y => Configuration.Bind("QueueClientSettings", y)));
 
         var serviceProvider = services.BuildServiceProvider();
 
@@ -154,7 +150,7 @@ public class QueueClientFactoryTests : BaseTestHost
         // arrange
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings",  y)));
+        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y)));
 
         var serviceProvider = services.BuildServiceProvider();
 

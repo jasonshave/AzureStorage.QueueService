@@ -1,6 +1,6 @@
 ﻿using Microsoft.Extensions.Configuration;
 
-namespace JasonShave.AzureStorage.QueueService.Tests
+namespace AzureStorage.QueueService.Tests
 {
     public abstract class BaseTestHost
     {

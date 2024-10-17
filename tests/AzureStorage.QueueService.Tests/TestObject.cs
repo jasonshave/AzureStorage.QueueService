@@ -1,4 +1,4 @@
-﻿namespace JasonShave.AzureStorage.QueueService.Tests;
+﻿namespace AzureStorage.QueueService.Tests;
 
 public class TestObject
 {
