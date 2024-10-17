@@ -17,7 +17,7 @@ public class QueueClientSettingsBuilder
         var queueClientSettings = new QueueClientSettings();
         settings(queueClientSettings);
 
-        Registry.NamedClientsSettings.Add(clientName, queueClientSettings);
+        Registry.NamedClientsSettings.TryAdd(clientName, queueClientSettings);
 
         return this;
     }

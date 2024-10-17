@@ -17,14 +17,13 @@ public class QueueClientFactoryTests : BaseTestHost
     public void QueueClientFactory_GetNamedClient_ReturnsClient()
     {
         // arrange
-        var configurationBuilder = new ConfigurationBuilder();
-        var configuration = configurationBuilder.Build();
         var services = new ServiceCollection();
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => configuration.Bind("QueueClientSettings",  y)));
+        services.AddLogging();
+        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings",  y)));
 
         var serviceProvider = services.BuildServiceProvider();
 
-        var registry = serviceProvider.GetRequiredService<QueueClientSettingsRegistry>();
+        var registry = new QueueClientSettingsRegistry();
         var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
         var mockQueueClient = new Mock<QueueClient>();
         mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
@@ -38,53 +37,20 @@ public class QueueClientFactoryTests : BaseTestHost
     }
 
     [Fact]
-    public void GetNamedClient_ReturnsValidClient()
-    {
-        // arrange
-        IHost host = Host
-            .CreateDefaultBuilder()
-            .ConfigureServices(services =>
-            {
-                services.AddAzureStorageQueueClient(x =>
-                {
-                    x.AddClient("foo", y => Configuration.Bind(nameof(QueueClientSettings), y));
-                });
-            })
-            .Build();
-
-        var registry = host.Services.GetRequiredService<QueueClientSettingsRegistry>();
-        var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
-        var mockQueueClient = new Mock<QueueClient>();
-        mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        IQueueClientFactory subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
-
-        // act
-        var queueClient = subject.GetQueueClient("foo");
-
-        // assert
-        queueClient.Should().NotBeNull();
-    }
-
-    [Fact]
     public void GetNamedClientTwice_ReturnsSameClient()
     {
-        // arrange
-        IHost host = Host
-            .CreateDefaultBuilder()
-            .ConfigureServices(services =>
-            {
-                services.AddAzureStorageQueueClient(x =>
-                {
-                    x.AddClient("foo", y => Configuration.Bind(nameof(QueueClientSettings), y));
-                });
-            })
-            .Build();
+        // arrange        
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings",  y)));
 
-        var registry = host.Services.GetRequiredService<QueueClientSettingsRegistry>();
+        var serviceProvider = services.BuildServiceProvider();
+
+        var registry = new QueueClientSettingsRegistry();
         var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
         var mockQueueClient = new Mock<QueueClient>();
         mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        IQueueClientFactory subject = new QueueClientFactory(host.Services, registry, mockQueueClientBuilder.Object);
+        IQueueClientFactory subject = new QueueClientFactory(serviceProvider, registry, mockQueueClientBuilder.Object);
 
         // act
         var queueClient1 = subject.GetQueueClient("foo");
