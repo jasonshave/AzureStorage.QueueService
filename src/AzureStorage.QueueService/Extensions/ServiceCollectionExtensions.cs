@@ -15,7 +15,9 @@ public static class ServiceCollectionExtensions
         var builder = new QueueClientSettingsBuilder(_registry);
         azureStorageQueueClientBuilderDelegate(builder);
                 
-        services.AddSingleton<IQueueClientFactory>(sp => new QueueClientFactory(sp, _registry, new QueueClientBuilder()));
+        services.AddSingleton(_registry);
+        services.AddSingleton<IQueueClientFactory, QueueClientFactory>();
+        services.AddSingleton<IQueueClientBuilder, QueueClientBuilder>();
         services.AddSingleton<IMessageConverter>(new JsonQueueMessageConverter(serializerOptions));
 
         return services;

@@ -12,12 +12,16 @@ internal sealed class QueueClientFactory : IQueueClientFactory
     private readonly IServiceProvider _services;
     private readonly QueueClientSettingsRegistry _registry;
     private readonly IQueueClientBuilder _queueClientBuilder;
+    private readonly ILoggerFactory _loggerFactory;
+    private readonly IMessageConverter _messageConverter;
 
-    public QueueClientFactory(IServiceProvider services, QueueClientSettingsRegistry registry, IQueueClientBuilder queueClientBuilder)
+    public QueueClientFactory(IServiceProvider services, QueueClientSettingsRegistry registry, IQueueClientBuilder queueClientBuilder, ILoggerFactory loggerFactory, IMessageConverter messageConverter)
     {
         _services = services;
         _registry = registry;
         _queueClientBuilder = queueClientBuilder;
+        _loggerFactory = loggerFactory;
+        _messageConverter = messageConverter;
     }
 
     public AzureStorageQueueClient GetQueueClient(string clientName)
@@ -52,10 +56,8 @@ internal sealed class QueueClientFactory : IQueueClientFactory
 
     private AzureStorageQueueClient Create(QueueClientSettings settings)
     {
-        var messageConverter = _services.GetRequiredService<IMessageConverter>();
-        var loggerFactory = _services.GetRequiredService<ILoggerFactory>();
         var queueClient = _queueClientBuilder.CreateClient(settings);
-        var azureStorageQueueClient = new AzureStorageQueueClient(messageConverter, queueClient, loggerFactory);
+        var azureStorageQueueClient = new AzureStorageQueueClient(_messageConverter, queueClient, _loggerFactory);
         return azureStorageQueueClient;
     }
 }
