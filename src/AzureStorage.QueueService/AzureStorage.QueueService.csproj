@@ -44,11 +44,11 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<None Include="..\..\README.md">
+		<None Include="..\..\images\logo.jpg">
 			<Pack>True</Pack>
 			<PackagePath>\</PackagePath>
 		</None>
-		<None Include="..\..\logo.jpg">
+		<None Include="..\..\README.md">
 			<Pack>True</Pack>
 			<PackagePath>\</PackagePath>
 		</None>
