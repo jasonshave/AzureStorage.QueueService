@@ -13,11 +13,11 @@ public sealed class AzureStorageQueueClient
     private readonly QueueClient _queueClient;
     private readonly ILogger<AzureStorageQueueClient> _logger;
 
-    internal AzureStorageQueueClient(IMessageConverter messageConverter, QueueClient queueClient, ILogger<AzureStorageQueueClient> logger)
+    internal AzureStorageQueueClient(IMessageConverter messageConverter, QueueClient queueClient, ILoggerFactory loggerFactory)
     {
         _messageConverter = messageConverter;
         _queueClient = queueClient;
-        _logger = logger;
+        _logger = loggerFactory.CreateLogger<AzureStorageQueueClient>();
     }
 
     public async ValueTask CreateQueueIfNotExistsAsync(IDictionary<string, string>? metadata = null, CancellationToken cancellationToken = default) =>

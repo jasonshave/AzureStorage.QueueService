@@ -4,7 +4,7 @@ namespace JasonShave.AzureStorage.QueueService;
 
 internal sealed class QueueClientSettingsRegistry
 {
-    public Dictionary<string, QueueClientSettings> ClientSettings { get; } = new();
+    public Dictionary<string, QueueClientSettings> NamedClientsSettings { get; } = new();
 
     public QueueClientSettings DefaultClientSettings { get; set; } = new();
 }
