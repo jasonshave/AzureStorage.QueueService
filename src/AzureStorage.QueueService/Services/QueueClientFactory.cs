@@ -30,10 +30,10 @@ internal sealed class QueueClientFactory : IQueueClientFactory
         }
 
         // not found so create one and add it
-        _registry.ClientSettings.TryGetValue(clientName, out var customClientSettings);
+        _registry.NamedClientsSettings.TryGetValue(clientName, out var customClientSettings);
         if (customClientSettings is null)
         {
-            throw new ApplicationException("Named client settings not found.");
+            throw new ApplicationException($"Settings for named client, {clientName} not found.");
         }
 
         var client = Create(customClientSettings);
@@ -53,9 +53,9 @@ internal sealed class QueueClientFactory : IQueueClientFactory
     private AzureStorageQueueClient Create(QueueClientSettings settings)
     {
         var messageConverter = _services.GetRequiredService<IMessageConverter>();
-        var logger = _services.GetRequiredService<ILogger<AzureStorageQueueClient>>();
+        var loggerFactory = _services.GetRequiredService<ILoggerFactory>();
         var queueClient = _queueClientBuilder.CreateClient(settings);
-        var azureStorageQueueClient = new AzureStorageQueueClient(messageConverter, queueClient, logger);
+        var azureStorageQueueClient = new AzureStorageQueueClient(messageConverter, queueClient, loggerFactory);
         return azureStorageQueueClient;
     }
 }

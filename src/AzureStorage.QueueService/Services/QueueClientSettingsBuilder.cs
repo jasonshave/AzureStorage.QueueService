@@ -4,21 +4,27 @@ namespace JasonShave.AzureStorage.QueueService.Services;
 
 public class QueueClientSettingsBuilder
 {
-    internal QueueClientSettingsRegistry SettingsRegistry { get; } = new();
+    internal QueueClientSettingsRegistry? Registry { get; }
+
+    internal QueueClientSettingsBuilder(QueueClientSettingsRegistry registry)
+    {
+        if (Registry is null)
+            Registry = registry;
+    }
 
     public QueueClientSettingsBuilder AddClient(string clientName, Action<QueueClientSettings> settings)
     {
         var queueClientSettings = new QueueClientSettings();
         settings(queueClientSettings);
 
-        SettingsRegistry.ClientSettings.Add(clientName, queueClientSettings);
+        Registry.NamedClientsSettings.Add(clientName, queueClientSettings);
 
         return this;
     }
 
     public void AddDefaultClient(Action<QueueClientSettings> settings)
     {
-        SettingsRegistry.DefaultClientSettings = new QueueClientSettings();
-        settings(SettingsRegistry.DefaultClientSettings);
+        Registry.DefaultClientSettings = new QueueClientSettings();
+        settings(Registry.DefaultClientSettings);
     }
 }

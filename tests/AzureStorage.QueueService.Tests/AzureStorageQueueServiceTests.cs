@@ -38,7 +38,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         var mockMessageConverter = new Mock<IMessageConverter>();
         mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<string>())).Returns(fixture.Create<TestObject>());
 
-        var mockLogger = new Mock<ILogger<AzureStorageQueueClient>>();
+        var mockLogger = new Mock<ILoggerFactory>();
 
         var subject = new AzureStorageQueueClient(mockMessageConverter.Object, queueClient.Object, mockLogger.Object);
 
@@ -67,7 +67,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         var mockMessageConverter = new Mock<IMessageConverter>();
         mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<string>())).Returns(fixture.Create<TestObject>());
 
-        var mockLogger = new Mock<ILogger<AzureStorageQueueClient>>();
+        var mockLogger = new Mock<ILoggerFactory>();
 
         var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, mockLogger.Object);
 
@@ -95,7 +95,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         var mockMessageConverter = new Mock<IMessageConverter>();
         mockMessageConverter.Setup(x => x.Convert<TestObject>(It.IsAny<string>())).Returns(fixture.Create<TestObject>());
 
-        var mockLogger = new Mock<ILogger<AzureStorageQueueClient>>();
+        var mockLogger = new Mock<ILoggerFactory>();
 
         var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, mockLogger.Object);
 
@@ -127,7 +127,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         var response = Response.FromValue(sendReceipt, mockResponse);
         mockQueueClient.Setup(x => x.SendMessageAsync(It.IsAny<BinaryData>(), null, null, CancellationToken.None)).ReturnsAsync(response);
 
-        var mockLogger = new Mock<ILogger<AzureStorageQueueClient>>();
+        var mockLogger = new Mock<ILoggerFactory>();
 
         var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, mockLogger.Object);
 

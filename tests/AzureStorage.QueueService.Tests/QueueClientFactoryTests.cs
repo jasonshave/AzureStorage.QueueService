@@ -14,6 +14,30 @@ namespace JasonShave.AzureStorage.QueueService.Tests;
 public class QueueClientFactoryTests : BaseTestHost
 {
     [Fact]
+    public void QueueClientFactory_GetNamedClient_ReturnsClient()
+    {
+        // arrange
+        var configurationBuilder = new ConfigurationBuilder();
+        var configuration = configurationBuilder.Build();
+        var services = new ServiceCollection();
+        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => configuration.Bind("QueueClientSettings",  y)));
+
+        var serviceProvider = services.BuildServiceProvider();
+
+        var registry = serviceProvider.GetRequiredService<QueueClientSettingsRegistry>();
+        var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
+        var mockQueueClient = new Mock<QueueClient>();
+        mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
+        IQueueClientFactory subject = new QueueClientFactory(serviceProvider, registry, mockQueueClientBuilder.Object);
+
+        // act
+        var queueClient = subject.GetQueueClient("foo");
+
+        // assert
+        queueClient.Should().NotBeNull();
+    }
+
+    [Fact]
     public void GetNamedClient_ReturnsValidClient()
     {
         // arrange
