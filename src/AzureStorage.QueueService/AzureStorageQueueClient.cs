@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 
 namespace AzureStorage.QueueService;
 
-public sealed class AzureStorageQueueClient
+public class AzureStorageQueueClient
 {
     private readonly IMessageConverter _messageConverter;
     private readonly QueueClient _queueClient;

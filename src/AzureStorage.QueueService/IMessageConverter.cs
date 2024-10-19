@@ -1,6 +1,6 @@
 ﻿namespace AzureStorage.QueueService;
 
-internal interface IMessageConverter
+public interface IMessageConverter
 {
     TOutput? Convert<TOutput>(BinaryData input);
 
