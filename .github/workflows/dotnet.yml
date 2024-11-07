@@ -23,4 +23,7 @@ jobs:
     - name: Build
       run: dotnet build --no-restore
     - name: Unit Tests
-      run: dotnet test tests/AzureStorage.QueueService.Tests --no-build --verbosity normal -p:ParallelizeTestCollections=false
+      env:
+        Storage__ConnectionString: ${{ secrets.STORAGECONNECTIONSTRING }}
+        Storage__QueueName: ${{ secrets.STORAGEQUEUENAME }}
+      run: dotnet test --no-build --verbosity normal -p:ParallelizeTestCollections=false

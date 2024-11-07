@@ -5,14 +5,14 @@ namespace AzureStorage.QueueService;
 
 public static class ServiceCollectionExtensions
 {
-    private static QueueClientSettingsRegistry _registry = new();
+    private static readonly QueueClientSettingsRegistry Registry = new();
 
     public static IServiceCollection AddAzureStorageQueueClient(this IServiceCollection services, Action<QueueClientSettingsBuilder> azureStorageQueueClientBuilderDelegate, JsonSerializerOptions? serializerOptions = null)
     {
-        var builder = new QueueClientSettingsBuilder(_registry);
+        var builder = new QueueClientSettingsBuilder(Registry);
         azureStorageQueueClientBuilderDelegate(builder);
 
-        services.AddSingleton(_registry);
+        services.AddSingleton(Registry);
         services.AddSingleton<IQueueClientFactory, QueueClientFactory>();
         services.AddSingleton<IQueueClientBuilder, QueueClientBuilder>();
         services.AddSingleton<IMessageConverter>(new JsonQueueMessageConverter(serializerOptions));
