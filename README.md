@@ -37,7 +37,26 @@ You will need to create an Azure Storage account in the Azure portal using a uni
     }
     ```
 
-3. You can create your queue in advance or allow the library to create it during runtime by setting the `CreateIfNotExists` property to `true`.
+    or set the endpoint URI which inclues the queue name and use a Token Credential during startup:
+
+   ```json
+   {
+       "QueueClientSettings": {
+           "EndpointUri": "https://somestorageaccount.queue.corewindows.net/myqueuename",           
+       }
+   }
+   ```
+
+   ```csharp
+   services.AddAzureStorageQueueClient(x => 
+    x.AddDefaultClient(y => 
+    {
+        y.EndpointUri = new Uri(builder.Configuration["SomeKey:EndpointUri"]),
+        y.TokenCredential = new DefaultAzureCredential(),
+    }));
+   ```
+
+4. You can create your queue in advance or allow the library to create it during runtime by setting the `CreateIfNotExists` property to `true`.
 
 ## Configure dependency injection
 
