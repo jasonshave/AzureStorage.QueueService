@@ -10,7 +10,7 @@ public class QueueClientSettings
 
     public string? ConnectionString { get; set; }
 
-    public string QueueName { get; set; } = string.Empty;
+    public string? QueueName { get; set; }
 
     public bool CreateIfNotExists { get; set; }
     
