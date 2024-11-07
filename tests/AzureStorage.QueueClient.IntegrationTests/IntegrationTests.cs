@@ -1,5 +1,6 @@
-
-using Xunit.Abstractions;
+using System.Net.Http.Json;
+using AzureStorage.QueueService.Tests.Server;
+using FluentAssertions;
 
 namespace AzureStorage.QueueClient.IntegrationTests
 {
@@ -7,7 +8,7 @@ namespace AzureStorage.QueueClient.IntegrationTests
     {
         private readonly HttpClient _httpClient;
 
-        public IntegrationTests(ITestOutputHelper testOutputHelper, TestWebApplicationFactory<Program> factory)
+        public IntegrationTests(TestWebApplicationFactory<Program> factory)
         {
             _httpClient = factory.CreateClient();
         }
@@ -16,12 +17,19 @@ namespace AzureStorage.QueueClient.IntegrationTests
         public async Task Test1()
         {
             // arrange
-            
+            var person = new Person()
+            {
+                FirstName = "Jason",
+            };
 
             // act
-            _httpClient.PostAsync("/send", new StringContent("Hello world!"));
+            var response = await _httpClient.PostAsJsonAsync("/send", person);
+            var personResponse = await response.Content.ReadFromJsonAsync<Person>();
 
             // assert
+            response.IsSuccessStatusCode.Should().BeTrue();
+            personResponse.Should().NotBeNull();
+            personResponse!.FirstName.Should().Be(person.FirstName);
         }
     }
 }

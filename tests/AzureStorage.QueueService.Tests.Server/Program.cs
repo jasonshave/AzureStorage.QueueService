@@ -1,4 +1,3 @@
-using Azure.Identity;
 using AzureStorage.QueueService;
 using AzureStorage.QueueService.Tests.Server;
 
@@ -6,8 +5,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddAzureStorageQueueClient(x => x.AddDefaultClient(settings =>
 {
-    settings.TokenCredential = new DefaultAzureCredential();
-    settings.EndpointUri = new Uri(builder.Configuration["Storage:EndpointUri"]);
+    settings.ConnectionString = builder.Configuration["Storage:ConnectionString"];
+    settings.QueueName = builder.Configuration["Storage:QueueName"];
+    settings.CreateIfNotExists = true;
 }));
 
 var app = builder.Build();
