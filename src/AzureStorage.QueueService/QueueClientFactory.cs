@@ -6,15 +6,13 @@ internal sealed class QueueClientFactory : IQueueClientFactory
 {
     private readonly Dictionary<string, AzureStorageQueueClient> _namedClients = new();
     private AzureStorageQueueClient? _defaultClient;
-    private readonly IServiceProvider _services;
     private readonly QueueClientSettingsRegistry _registry;
     private readonly IQueueClientBuilder _queueClientBuilder;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IMessageConverter _messageConverter;
 
-    public QueueClientFactory(IServiceProvider services, QueueClientSettingsRegistry registry, IQueueClientBuilder queueClientBuilder, ILoggerFactory loggerFactory, IMessageConverter messageConverter)
+    public QueueClientFactory(QueueClientSettingsRegistry registry, IQueueClientBuilder queueClientBuilder, ILoggerFactory loggerFactory, IMessageConverter messageConverter)
     {
-        _services = services;
         _registry = registry;
         _queueClientBuilder = queueClientBuilder;
         _loggerFactory = loggerFactory;

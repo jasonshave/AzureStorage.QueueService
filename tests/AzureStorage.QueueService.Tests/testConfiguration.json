@@ -2,6 +2,7 @@
   "QueueClientSettings": {
     "ConnectionString": "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=FAKE/xd3SoV4C52caAxURkg7Pso+X5QyFprgcAeDCw7joUYCGx3J7B+V+PZ6znEQ0lN/Mvxqdkwi+AStHyBWuA==;EndpointSuffix=core.windows.net",
     "QueueName": "fakeQueue",
-    "CreateIfNotExists": true
+    "CreateIfNotExists": true,
+    "EndpointUri": "https://fake.com"
   } 
 }

@@ -2,12 +2,11 @@
 
 public class QueueClientSettingsBuilder
 {
-    internal QueueClientSettingsRegistry? Registry { get; }
+    internal QueueClientSettingsRegistry Registry { get; }
 
     internal QueueClientSettingsBuilder(QueueClientSettingsRegistry registry)
     {
-        if (Registry is null)
-            Registry = registry;
+        Registry = registry;
     }
 
     public QueueClientSettingsBuilder AddClient(string clientName, Action<QueueClientSettings> settings)
