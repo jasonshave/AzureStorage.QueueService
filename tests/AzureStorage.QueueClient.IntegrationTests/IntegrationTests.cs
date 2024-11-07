@@ -2,34 +2,33 @@ using System.Net.Http.Json;
 using AzureStorage.QueueService.Tests.Server;
 using FluentAssertions;
 
-namespace AzureStorage.QueueClient.IntegrationTests
+namespace AzureStorage.QueueClient.IntegrationTests;
+
+public class IntegrationTests : IClassFixture<TestWebApplicationFactory<Program>>
 {
-    public class IntegrationTests : IClassFixture<TestWebApplicationFactory<Program>>
+    private readonly HttpClient _httpClient;
+
+    public IntegrationTests(TestWebApplicationFactory<Program> factory)
     {
-        private readonly HttpClient _httpClient;
+        _httpClient = factory.CreateClient();
+    }
 
-        public IntegrationTests(TestWebApplicationFactory<Program> factory)
+    [Fact]
+    public async Task SendMessage_SendsAnd_ReturnsSameMessage()
+    {
+        // arrange
+        var person = new Person()
         {
-            _httpClient = factory.CreateClient();
-        }
+            FirstName = "Jason",
+        };
 
-        [Fact]
-        public async Task Test1()
-        {
-            // arrange
-            var person = new Person()
-            {
-                FirstName = "Jason",
-            };
+        // act
+        var response = await _httpClient.PostAsJsonAsync("/send", person);
+        var personResponse = await response.Content.ReadFromJsonAsync<Person>();
 
-            // act
-            var response = await _httpClient.PostAsJsonAsync("/send", person);
-            var personResponse = await response.Content.ReadFromJsonAsync<Person>();
-
-            // assert
-            response.IsSuccessStatusCode.Should().BeTrue();
-            personResponse.Should().NotBeNull();
-            personResponse!.FirstName.Should().Be(person.FirstName);
-        }
+        // assert
+        response.IsSuccessStatusCode.Should().BeTrue();
+        personResponse.Should().NotBeNull();
+        personResponse!.FirstName.Should().Be(person.FirstName);
     }
 }
