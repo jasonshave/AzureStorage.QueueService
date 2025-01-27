@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using AzureStorage.QueueService.Tests.Server;
 using FluentAssertions;
+using Xunit.Abstractions;
 
 namespace AzureStorage.QueueClient.IntegrationTests;
 
@@ -8,8 +9,9 @@ public class IntegrationTests : IClassFixture<TestWebApplicationFactory<Program>
 {
     private readonly HttpClient _httpClient;
 
-    public IntegrationTests(TestWebApplicationFactory<Program> factory)
+    public IntegrationTests(ITestOutputHelper testOutputHelper, TestWebApplicationFactory<Program> factory)
     {
+        factory.TestOutputHelper = testOutputHelper;
         _httpClient = factory.CreateClient();
     }
 
