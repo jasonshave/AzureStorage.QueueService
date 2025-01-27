@@ -80,16 +80,15 @@ public class AzureStorageQueueClient
     /// <typeparam name="TMessage"></typeparam>
     /// <param name="message"></param>
     /// <param name="cancellationToken"></param>
-    /// <returns><see cref="SendResponse"/></returns>
+    /// <returns><see cref="SendReceipt"/></returns>
     /// <exception cref="Exception"></exception>
-    public async ValueTask<SendResponse> SendMessageAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default)
+    public async ValueTask<SendReceipt> SendMessageAsync<TMessage>(TMessage message, TimeSpan? visibilityTimeout = null, TimeSpan? timeToLive = null, CancellationToken cancellationToken = default)
     {
         try
         {
             BinaryData binaryMessage = _messageConverter.Convert(message);
-            SendReceipt response = await _queueClient.SendMessageAsync(binaryMessage, null, null, cancellationToken);
-
-            return new SendResponse(response.PopReceipt, response.MessageId);
+            SendReceipt response = await _queueClient.SendMessageAsync(binaryMessage, visibilityTimeout, timeToLive, cancellationToken);
+            return response;
         }
         catch (Exception e)
         {
