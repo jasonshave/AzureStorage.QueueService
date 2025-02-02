@@ -51,7 +51,8 @@ public class ExtensionTests
                 .AddJsonFile("testConfiguration.json", false, true);
         }).ConfigureServices((hostContext, services) =>
         {
-            services.AddAzureStorageQueueClient(x => x.AddDefaultClient(y => hostContext.Configuration.Bind(nameof(QueueClientSettings), y)));
+            services.AddAzureStorageQueueClient(x => x.AddDefaultClient(y => hostContext.Configuration.Bind(nameof(QueueClientSettings), y)))
+            .ConfigureQueueServiceTelemetry(options => options.CreateNewActivityOnMessageRetrieval = true);
         }).Build();
 
         host.Dispose();
