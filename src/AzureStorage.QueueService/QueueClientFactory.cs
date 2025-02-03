@@ -1,4 +1,6 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using AzureStorage.QueueService.Telemetry;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace AzureStorage.QueueService;
 
@@ -10,13 +12,20 @@ internal sealed class QueueClientFactory : IQueueClientFactory
     private readonly IQueueClientBuilder _queueClientBuilder;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IMessageConverter _messageConverter;
+    private readonly IOptions<QueueServiceTelemetrySettings> _telemetrySettings;
 
-    public QueueClientFactory(QueueClientSettingsRegistry registry, IQueueClientBuilder queueClientBuilder, ILoggerFactory loggerFactory, IMessageConverter messageConverter)
+    public QueueClientFactory(
+        QueueClientSettingsRegistry registry, 
+        IQueueClientBuilder queueClientBuilder, 
+        ILoggerFactory loggerFactory, 
+        IMessageConverter messageConverter,
+        IOptions<QueueServiceTelemetrySettings> telemetrySettingsOptions)
     {
         _registry = registry;
         _queueClientBuilder = queueClientBuilder;
         _loggerFactory = loggerFactory;
         _messageConverter = messageConverter;
+        _telemetrySettings = telemetrySettingsOptions;
     }
 
     public AzureStorageQueueClient GetQueueClient(string clientName)
@@ -52,7 +61,7 @@ internal sealed class QueueClientFactory : IQueueClientFactory
     private AzureStorageQueueClient Create(QueueClientSettings settings)
     {
         var queueClient = _queueClientBuilder.CreateClient(settings);
-        var azureStorageQueueClient = new AzureStorageQueueClient(_messageConverter, queueClient, _loggerFactory);
+        var azureStorageQueueClient = new AzureStorageQueueClient(_messageConverter, queueClient, _loggerFactory, _telemetrySettings);
         return azureStorageQueueClient;
     }
 }

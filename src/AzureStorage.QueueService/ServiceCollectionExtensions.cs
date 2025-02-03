@@ -1,4 +1,5 @@
 ﻿using System.Text.Json;
+using AzureStorage.QueueService.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AzureStorage.QueueService;
@@ -17,6 +18,12 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IQueueClientBuilder, QueueClientBuilder>();
         services.AddSingleton<IMessageConverter>(new JsonQueueMessageConverter(serializerOptions));
 
+        return services;
+    }
+
+    public static IServiceCollection ConfigureQueueServiceTelemetry(this IServiceCollection services, Action<QueueServiceTelemetrySettings> options)
+    {
+        services.Configure(options);
         return services;
     }
 }

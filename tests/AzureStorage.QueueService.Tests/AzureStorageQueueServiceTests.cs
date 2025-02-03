@@ -1,11 +1,14 @@
 ﻿using AutoFixture;
 using Azure;
+using Azure.Messaging;
 using Azure.Storage.Queues;
 using Azure.Storage.Queues.Models;
+using AzureStorage.QueueService.Telemetry;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace AzureStorage.QueueService.Tests;
@@ -13,17 +16,29 @@ namespace AzureStorage.QueueService.Tests;
 public class AzureStorageQueueServiceTests : BaseTestHost
 {
     private readonly QueueClientSettings _queueClientSettings;
+    private readonly IOptions<QueueServiceTelemetrySettings> _telemetrySettings = Options.Create(new QueueServiceTelemetrySettings());
     private readonly IServiceProvider _serviceProvider;
 
     public AzureStorageQueueServiceTests()
     {
         var services = new ServiceCollection();
-        services.AddLogging();
+        services.AddLogging();        
 
         _serviceProvider = services.BuildServiceProvider();
 
         _queueClientSettings = new();
         Configuration.Bind(nameof(QueueClientSettings), _queueClientSettings);
+
+        var data = new TestObject
+        {
+            Property1 = "test",
+            Property2 = true,
+            Property3 = 1
+        };
+        var cloudEvent = new CloudEvent("source", "myClass", data, typeof(TestObject))
+        {
+            Id = "myCustomId",
+        };
     }
 
     [Fact(DisplayName = "Peek messages returns message collection")]
@@ -44,7 +59,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
 
         var loggerFactory = _serviceProvider.GetRequiredService<ILoggerFactory>();
 
-        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory);
+        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory, _telemetrySettings);
 
         // act
         var messages = await subject.PeekMessagesAsync<TestObject>(It.IsAny<int>());
@@ -73,7 +88,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
 
         var loggerFactory = _serviceProvider.GetRequiredService<ILoggerFactory>();
 
-        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory);
+        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory, _telemetrySettings);
 
         // act/assert
         await subject.ReceiveMessagesAsync<TestObject>(HandleMessage, HandleException);
@@ -101,14 +116,14 @@ public class AzureStorageQueueServiceTests : BaseTestHost
 
         var loggerFactory = _serviceProvider.GetRequiredService<ILoggerFactory>();
 
-        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory);
+        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory, _telemetrySettings);
 
         // act/assert
         await subject.ReceiveMessagesAsync<TestObject>(
-            (message, metadata) => throw new Exception("Hello from Handler"),
+            (message, metadata) => throw new Exception("Hello from Exception"),
             (exception, metadata) =>
             {
-                exception.Message.Should().Be("Hello from Handler");
+                exception.Message.Should().Be("Hello from Exception");
                 return ValueTask.CompletedTask;
             });
     }
@@ -133,7 +148,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
 
         var loggerFactory = _serviceProvider.GetRequiredService<ILoggerFactory>();
 
-        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory);
+        var subject = new AzureStorageQueueClient(mockMessageConverter.Object, mockQueueClient.Object, loggerFactory, _telemetrySettings);
 
         // act/assert
         await subject.Invoking(async x => await x.SendMessageAsync(testObject)).Should().NotThrowAsync();
