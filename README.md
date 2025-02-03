@@ -212,6 +212,36 @@ The library allows you to pull multiple messages by specifying the `maxMessage` 
 await _queueClient.ReceiveMessagesAsync<MyMessage>(HandleMessage, HandleException, cancellationToken, 10);
 ```
 
+## OpenTelemetry Support
+
+The library supports OpenTelemetry logs, traces, and metrics and can be configured using the standard OTEL library as follows:
+
+```csharp
+builder.Services.AddOpenTelemetry()
+  .WithTracing(t => t.AddAzureStorageQueueTracing())
+  .WithMetrics(m => m.AddAzureStorageQueueMetrics());
+```
+
+The library inclues two flags to control traces for sending messages and the creation of an Activity (span) for each query to retrieve a message. These two activities are:
+- Queue.Read
+- Queue.Send
+
+>NOTE: To observe the above spans, you need to configure the library to create them. Be cautious on enabling the `Queue.Read` span though as it creates a lot of data in your telemetry system; particularly if you read with a high frequency (i.e. every 1 second, etc.).
+
+```csharp
+builder.Services.ConfigureQueueServiceTelemetry(t =>
+{
+  t.CreateNewActivityOnMessageRetrieval = true; // Queue.Read trace
+  t.CreateNewActivityOnMessageSend = true; // Queue.Send trace
+});
+```
+
+The following metrics have also been configured and read through tools like Azure Monitor or Grafana:
+- `queue_messages_received_total`
+- `queue_messages_sent_total`
+- `queue_messages_processed_total`
+- `queue_message_processing_duration_seconds`
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE.md](license.md) file for details.
