@@ -84,8 +84,6 @@ public class QueueIntegrationTests : IClassFixture<InfrastructureFixture>
 
         // act
         var sendReceipt = await _client.SendMessageAsync(cloudEvent, TimeSpan.FromMinutes(10));
-
-        // delete message
         await Task.Delay(500);
         var result = await _client.DeleteMessageAsync(sendReceipt.MessageId, sendReceipt.PopReceipt);
 
