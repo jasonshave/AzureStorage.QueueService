@@ -47,6 +47,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         // arrange
         var fixture = new Fixture();
         Response mockResponse = Mock.Of<Response>();
+        
         var peekedMessage = QueuesModelFactory.PeekedMessage("1", "test_text", 1);
         PeekedMessage[] peekedMessages = { peekedMessage };
         var response = Response.FromValue(peekedMessages, mockResponse);

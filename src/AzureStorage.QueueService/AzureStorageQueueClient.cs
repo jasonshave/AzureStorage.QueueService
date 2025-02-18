@@ -26,15 +26,40 @@ public class AzureStorageQueueClient
         _telemetrySettings = telemetrySettingsOptions.Value;
     }
 
+    /// <summary>
+    /// Creates a queue if it does not already exist.
+    /// </summary>
+    /// <param name="metadata"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async ValueTask CreateQueueIfNotExistsAsync(IDictionary<string, string>? metadata = null, CancellationToken cancellationToken = default) =>
         await _queueClient.CreateIfNotExistsAsync(metadata, cancellationToken);
 
+    /// <summary>
+    /// Clears all messages from the queue.
+    /// </summary>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async ValueTask ClearMessagesAsync(CancellationToken cancellationToken = default) =>
         await _queueClient.ClearMessagesAsync(cancellationToken);
 
+    /// <summary>
+    /// Peeks messages from the queue and deserializes the input using a JSON message converter.
+    /// </summary>
+    /// <typeparam name="TMessage"></typeparam>
+    /// <param name="numMessages"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public async ValueTask<IEnumerable<TMessage>> PeekMessagesAsync<TMessage>(int numMessages, CancellationToken cancellationToken = default) =>
         (await _queueClient.PeekMessagesAsync(numMessages, cancellationToken)).Value.Convert<TMessage>(_messageConverter);
 
+    /// <summary>
+    /// Receives a message of the type specified and deserializes the input using a JSON message converter.
+    /// </summary>
+    /// <typeparam name="TMessage"></typeparam>
+    /// <param name="numMessages"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     public IEnumerable<TMessage> PeekMessages<TMessage>(int numMessages, CancellationToken cancellationToken = default) =>
         _queueClient.PeekMessages(numMessages, cancellationToken).Value.Convert<TMessage>(_messageConverter);
 
@@ -141,5 +166,28 @@ public class AzureStorageQueueClient
             _logger.LogSendError(e.Message);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Deletes a message from the queue.
+    /// </summary>
+    /// <param name="messageId"></param>
+    /// <param name="popReceipt"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
+    public async ValueTask<bool> DeleteMessageAsync(string messageId, string popReceipt, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var result = await _queueClient.DeleteMessageAsync(messageId, popReceipt, cancellationToken);
+            if (result.IsError) return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting message from queue.");
+            return false;
+        }
+
+        return true;
     }
 }

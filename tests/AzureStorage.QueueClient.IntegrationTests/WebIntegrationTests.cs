@@ -5,11 +5,11 @@ using Xunit.Abstractions;
 
 namespace AzureStorage.QueueClient.IntegrationTests;
 
-public class IntegrationTests : IClassFixture<TestWebApplicationFactory<Program>>
+public class WebIntegrationTests : IClassFixture<TestWebApplicationFactory<Program>>
 {
     private readonly HttpClient _httpClient;
 
-    public IntegrationTests(ITestOutputHelper testOutputHelper, TestWebApplicationFactory<Program> factory)
+    public WebIntegrationTests(ITestOutputHelper testOutputHelper, TestWebApplicationFactory<Program> factory)
     {
         factory.TestOutputHelper = testOutputHelper;
         _httpClient = factory.CreateClient();
