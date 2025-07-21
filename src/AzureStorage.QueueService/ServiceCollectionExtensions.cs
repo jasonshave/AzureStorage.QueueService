@@ -21,38 +21,7 @@ public static class ServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Adds a strongly-typed queue client using the default queue client configuration.
-    /// Similar to IHttpClientFactory's typed client pattern.
-    /// </summary>
-    /// <typeparam name="TClient">The typed client interface</typeparam>
-    /// <typeparam name="TImplementation">The typed client implementation</typeparam>
-    /// <typeparam name="TMessage">The message type the client handles</typeparam>
-    /// <param name="services">The service collection</param>
-    /// <param name="clientName">Optional name of the queue client to use. If null, uses the default client.</param>
-    /// <returns>The service collection</returns>
-    public static IServiceCollection AddTypedQueueClient<TClient, TImplementation, TMessage>(
-        this IServiceCollection services, 
-        string? clientName = null)
-        where TClient : class, ITypedQueueClient<TMessage>
-        where TImplementation : class, TClient
-        where TMessage : class
-    {
-        services.AddTransient<TClient>(provider =>
-        {
-            var factory = provider.GetRequiredService<IQueueClientFactory>();
-            var queueClient = string.IsNullOrEmpty(clientName) 
-                ? factory.GetQueueClient() 
-                : factory.GetQueueClient(clientName);
-            
-            var typedClient = new TypedQueueClient<TMessage>(queueClient);
-            return (TClient)(object)typedClient;
-        });
-
-        return services;
-    }
-
-    /// <summary>
-    /// Adds a strongly-typed queue client interface with default implementation.
+    /// Adds a strongly-typed queue client for a specific message type.
     /// </summary>
     /// <typeparam name="TMessage">The message type the client handles</typeparam>
     /// <param name="services">The service collection</param>
@@ -73,6 +42,20 @@ public static class ServiceCollectionExtensions
             return new TypedQueueClient<TMessage>(queueClient);
         });
 
+        return services;
+    }
+
+    /// <summary>
+    /// Adds a custom typed queue client class that will be resolved through DI.
+    /// Similar to IHttpClientFactory's typed client pattern where you register custom client types.
+    /// </summary>
+    /// <typeparam name="TClient">The custom client class</typeparam>
+    /// <param name="services">The service collection</param>
+    /// <returns>The service collection</returns>
+    public static IServiceCollection AddQueueClient<TClient>(this IServiceCollection services)
+        where TClient : class
+    {
+        services.AddTransient<TClient>();
         return services;
     }
 

@@ -149,6 +149,57 @@ public class OrderService
 }
 ```
 
+### Custom Queue Client Types
+
+You can also register custom client types that encapsulate business logic, similar to how IHttpClientFactory works with custom client classes:
+
+```csharp
+// Define a custom client class
+public class OrderQueueClient
+{
+    private readonly ITypedQueueClient<OrderMessage> _queueClient;
+
+    public OrderQueueClient(ITypedQueueClient<OrderMessage> queueClient)
+    {
+        _queueClient = queueClient;
+    }
+
+    public async Task SendOrderAsync(OrderMessage order)
+    {
+        // Add custom business logic here
+        await _queueClient.SendMessageAsync(order);
+    }
+
+    public async Task SendPriorityOrderAsync(OrderMessage order)
+    {
+        // Custom method with different behavior
+        await _queueClient.SendMessageAsync(order, TimeSpan.Zero); // Immediate visibility
+    }
+}
+
+// Register the custom client
+services.AddAzureStorageQueueClient(x => 
+    x.AddDefaultClient(y => Configuration.Bind(nameof(QueueClientSettings), y)));
+services.AddTypedQueueClient<OrderMessage>(); // Register the underlying typed client
+services.AddQueueClient<OrderQueueClient>(); // Register the custom client
+
+// Use the custom client
+public class OrderService
+{
+    private readonly OrderQueueClient _orderClient;
+
+    public OrderService(OrderQueueClient orderClient) // Direct injection of custom type
+    {
+        _orderClient = orderClient;
+    }
+
+    public async Task ProcessOrderAsync(OrderMessage order)
+    {
+        await _orderClient.SendOrderAsync(order); // Use custom methods
+    }
+}
+```
+
 ## Using the IQueueClientFactory
 
 ### Example 1: Get a default queue client

@@ -166,4 +166,73 @@ public class TypedQueueClientTests : BaseTestHost
         services.Invoking(s => s.BuildServiceProvider().GetRequiredService<ITypedQueueClient<TestObject>>())
                .Should().Throw<InvalidOperationException>();
     }
+
+    [Fact]
+    public void AddQueueClient_WithCustomClientType_RegistersCorrectly()
+    {
+        // arrange
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAzureStorageQueueClient(options => 
+            options.AddDefaultClient(y => 
+            {
+                y.ConnectionString = "UseDevelopmentStorage=true";
+                y.QueueName = "test-queue";
+                y.CreateIfNotExists = false; // Don't actually try to create in tests
+            }));
+        services.AddTypedQueueClient<TestObject>(); // Register the ITypedQueueClient<TestObject> first
+        services.AddQueueClient<TestOrderClient>(); // Register the custom client
+
+        // act
+        var serviceProvider = services.BuildServiceProvider();
+        var customClient = serviceProvider.GetService<TestOrderClient>();
+
+        // assert
+        customClient.Should().NotBeNull();
+        customClient.Should().BeOfType<TestOrderClient>();
+    }
+
+    [Fact]
+    public void CustomQueueClient_CanUseUnderlyingTypedClient()
+    {
+        // arrange
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAzureStorageQueueClient(options => 
+            options.AddDefaultClient(y => 
+            {
+                y.ConnectionString = "UseDevelopmentStorage=true";
+                y.QueueName = "test-queue";
+                y.CreateIfNotExists = false; // Don't actually try to create in tests
+            }));
+        services.AddTypedQueueClient<TestObject>(); // Register the underlying typed client
+        services.AddQueueClient<TestOrderClient>(); // Register the custom client
+
+        // act
+        var serviceProvider = services.BuildServiceProvider();
+        var customClient = serviceProvider.GetService<TestOrderClient>();
+        var typedClient = serviceProvider.GetService<ITypedQueueClient<TestObject>>();
+
+        // assert
+        customClient.Should().NotBeNull();
+        typedClient.Should().NotBeNull();
+        customClient!.GetUnderlyingClient().Should().NotBeNull();
+    }
+
+    public class TestOrderClient
+    {
+        private readonly ITypedQueueClient<TestObject> _queueClient;
+
+        public TestOrderClient(ITypedQueueClient<TestObject> queueClient)
+        {
+            _queueClient = queueClient;
+        }
+
+        public async Task SendOrderAsync(TestObject order)
+        {
+            await _queueClient.SendMessageAsync(order);
+        }
+
+        public ITypedQueueClient<TestObject> GetUnderlyingClient() => _queueClient;
+    }
 }
