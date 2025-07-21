@@ -21,13 +21,15 @@ public static class Endpoints
         Person? response = null;
         await client.ReceiveMessagesAsync<Person>(HandleMessage, HandleException, 10);
 
-        async ValueTask HandleMessage(Person? message, IDictionary<string, string>? metadata)
+        ValueTask HandleMessage(Person? message, IDictionary<string, string>? metadata)
         {
             response = message;
+            return ValueTask.CompletedTask;
         }
 
-        async ValueTask HandleException(Exception ex, IDictionary<string, string>? metadata)
+        ValueTask HandleException(Exception ex, IDictionary<string, string>? metadata)
         {
+            return ValueTask.CompletedTask;
         }
 
         if (response is not null)
