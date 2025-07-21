@@ -107,7 +107,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         QueueMessage[] peekedMessages = { queueMessage };
         var response = Response.FromValue(peekedMessages, mockResponse);
 
-        var mockQueueClient = new Mock<QueueClient>(_queueClientSettings.ConnectionString, _queueClientSettings.QueueName);
+        var mockQueueClient = new Mock<QueueClient>(_queueClientSettings.ConnectionString!, _queueClientSettings.QueueName!);
         mockQueueClient.Setup(x => x.ReceiveMessagesAsync(1, null, CancellationToken.None)).ReturnsAsync(response);
         mockQueueClient.Setup(x => x.DeleteMessageAsync(It.IsAny<string>(), It.IsAny<string>(), CancellationToken.None));
 
@@ -135,7 +135,7 @@ public class AzureStorageQueueServiceTests : BaseTestHost
         var fixture = new Fixture();
         var testObject = fixture.Create<TestObject>();
 
-        var mockQueueClient = new Mock<QueueClient>(_queueClientSettings.ConnectionString, _queueClientSettings.QueueName);
+        var mockQueueClient = new Mock<QueueClient>(_queueClientSettings.ConnectionString!, _queueClientSettings.QueueName!);
         var mockResponse = Mock.Of<Response>();
         var mockMessageConverter = new Mock<IMessageConverter>();
 

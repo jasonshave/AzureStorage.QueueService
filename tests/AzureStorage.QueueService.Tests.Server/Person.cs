@@ -2,5 +2,5 @@
 
 public class Person
 {
-    public string FirstName { get; set; }
+    public string FirstName { get; set; } = string.Empty;
 }

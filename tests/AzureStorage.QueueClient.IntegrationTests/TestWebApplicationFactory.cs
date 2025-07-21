@@ -9,7 +9,7 @@ namespace AzureStorage.QueueClient.IntegrationTests;
 public class TestWebApplicationFactory<TProgram>
     : WebApplicationFactory<TProgram> where TProgram : class
 {
-    public ITestOutputHelper TestOutputHelper { get; set; }
+    public ITestOutputHelper TestOutputHelper { get; set; } = null!;
 
     protected override IHost CreateHost(IHostBuilder builder)
     {
