@@ -25,6 +25,7 @@ public class TypedQueueClientTests : BaseTestHost
             {
                 y.ConnectionString = "UseDevelopmentStorage=true";
                 y.QueueName = "test-queue";
+                y.CreateIfNotExists = false; // Don't actually try to create in tests
             }));
         services.AddTypedQueueClient<TestObject>();
 
@@ -48,6 +49,7 @@ public class TypedQueueClientTests : BaseTestHost
             {
                 y.ConnectionString = "UseDevelopmentStorage=true";
                 y.QueueName = "test-queue";
+                y.CreateIfNotExists = false; // Don't actually try to create in tests
             }));
         services.AddTypedQueueClient<TestObject>("testqueue");
 
@@ -97,6 +99,7 @@ public class TypedQueueClientTests : BaseTestHost
             {
                 y.ConnectionString = "UseDevelopmentStorage=true";
                 y.QueueName = "test-queue";
+                y.CreateIfNotExists = false; // Don't actually try to create in tests
             }));
         
         // Register different typed clients for different message types
@@ -127,11 +130,13 @@ public class TypedQueueClientTests : BaseTestHost
             {
                 y.ConnectionString = "UseDevelopmentStorage=true";
                 y.QueueName = "test-queue-1";
+                y.CreateIfNotExists = false; // Don't actually try to create in tests
             });
             options.AddClient("queue2", y => 
             {
                 y.ConnectionString = "UseDevelopmentStorage=true";
                 y.QueueName = "test-queue-2";
+                y.CreateIfNotExists = false; // Don't actually try to create in tests
             });
         });
         

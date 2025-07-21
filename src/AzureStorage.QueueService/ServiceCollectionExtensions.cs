@@ -15,7 +15,6 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(Registry);
         services.AddSingleton<IQueueClientFactory, QueueClientFactory>();
-        services.AddSingleton<IQueueClientBuilder, QueueClientBuilder>();
         services.AddSingleton<IMessageConverter>(new JsonQueueMessageConverter(serializerOptions));
 
         return services;
