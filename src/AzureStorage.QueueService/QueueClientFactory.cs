@@ -1,4 +1,5 @@
-﻿using AzureStorage.QueueService.Telemetry;
+﻿using Azure.Storage.Queues;
+using AzureStorage.QueueService.Telemetry;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -9,20 +10,17 @@ internal sealed class QueueClientFactory : IQueueClientFactory
     private readonly Dictionary<string, AzureStorageQueueClient> _namedClients = new();
     private AzureStorageQueueClient? _defaultClient;
     private readonly QueueClientSettingsRegistry _registry;
-    private readonly IQueueClientBuilder _queueClientBuilder;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IMessageConverter _messageConverter;
     private readonly IOptions<QueueServiceTelemetrySettings> _telemetrySettings;
 
     public QueueClientFactory(
         QueueClientSettingsRegistry registry, 
-        IQueueClientBuilder queueClientBuilder, 
         ILoggerFactory loggerFactory, 
         IMessageConverter messageConverter,
         IOptions<QueueServiceTelemetrySettings> telemetrySettingsOptions)
     {
         _registry = registry;
-        _queueClientBuilder = queueClientBuilder;
         _loggerFactory = loggerFactory;
         _messageConverter = messageConverter;
         _telemetrySettings = telemetrySettingsOptions;
@@ -60,8 +58,27 @@ internal sealed class QueueClientFactory : IQueueClientFactory
 
     private AzureStorageQueueClient Create(QueueClientSettings settings)
     {
-        var queueClient = _queueClientBuilder.CreateClient(settings);
+        var queueClient = CreateQueueClient(settings);
         var azureStorageQueueClient = new AzureStorageQueueClient(_messageConverter, queueClient, _loggerFactory, _telemetrySettings);
         return azureStorageQueueClient;
+    }
+
+    private QueueClient CreateQueueClient(QueueClientSettings settings)
+    {
+        QueueClient? client = default;
+        if (settings.TokenCredential is not null && settings.EndpointUri is not null)
+            client = new QueueClient(settings.EndpointUri, settings.TokenCredential);
+
+        if (settings.ConnectionString is not null)
+            client = new QueueClient(settings.ConnectionString, settings.QueueName);
+
+        if (client is null)
+            throw new ApplicationException(
+                "There was a problem creating the client. Unable to determine if the endpoint URI or connection string should be used. " +
+                "Please be sure to set the connection string or the token credential and endpoint URI together.");
+
+        if (settings.CreateIfNotExists) client.CreateIfNotExists();
+
+        return client;
     }
 }
