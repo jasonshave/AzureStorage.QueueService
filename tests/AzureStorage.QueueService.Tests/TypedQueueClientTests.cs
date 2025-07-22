@@ -181,15 +181,15 @@ public class TypedQueueClientTests : BaseTestHost
                 y.CreateIfNotExists = false; // Don't actually try to create in tests
             }));
         services.AddTypedQueueClient<TestObject>(); // Register the ITypedQueueClient<TestObject> first
-        services.AddQueueClient<TestOrderClient>(); // Register the custom client
+        services.AddQueueClient<LegacyTestOrderClient>(); // Register the custom client
 
         // act
         var serviceProvider = services.BuildServiceProvider();
-        var customClient = serviceProvider.GetService<TestOrderClient>();
+        var customClient = serviceProvider.GetService<LegacyTestOrderClient>();
 
         // assert
         customClient.Should().NotBeNull();
-        customClient.Should().BeOfType<TestOrderClient>();
+        customClient.Should().BeOfType<LegacyTestOrderClient>();
     }
 
     [Fact]
@@ -206,11 +206,11 @@ public class TypedQueueClientTests : BaseTestHost
                 y.CreateIfNotExists = false; // Don't actually try to create in tests
             }));
         services.AddTypedQueueClient<TestObject>(); // Register the underlying typed client
-        services.AddQueueClient<TestOrderClient>(); // Register the custom client
+        services.AddQueueClient<LegacyTestOrderClient>(); // Register the custom client
 
         // act
         var serviceProvider = services.BuildServiceProvider();
-        var customClient = serviceProvider.GetService<TestOrderClient>();
+        var customClient = serviceProvider.GetService<LegacyTestOrderClient>();
         var typedClient = serviceProvider.GetService<ITypedQueueClient<TestObject>>();
 
         // assert
@@ -219,11 +219,169 @@ public class TypedQueueClientTests : BaseTestHost
         customClient!.GetUnderlyingClient().Should().NotBeNull();
     }
 
+    [Fact]
+    public void AddQueueClient_WithConfiguration_RegistersCorrectly()
+    {
+        // arrange
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddQueueClient<TestOrderClient>(settings =>
+        {
+            settings.ConnectionString = "UseDevelopmentStorage=true";
+            settings.QueueName = "test-queue";
+            settings.CreateIfNotExists = false;
+        });
+
+        // act
+        var serviceProvider = services.BuildServiceProvider();
+        var customClient = serviceProvider.GetService<TestOrderClient>();
+
+        // assert
+        customClient.Should().NotBeNull();
+        customClient.Should().BeOfType<TestOrderClient>();
+    }
+
+    [Fact]
+    public void AddQueueClient_WithNamedConfiguration_RegistersCorrectly()
+    {
+        // arrange
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddQueueClient<TestOrderClient>("orders", settings =>
+        {
+            settings.ConnectionString = "UseDevelopmentStorage=true";
+            settings.QueueName = "orders-queue";
+            settings.CreateIfNotExists = false;
+        });
+
+        // act
+        var serviceProvider = services.BuildServiceProvider();
+        var customClient = serviceProvider.GetService<TestOrderClient>();
+
+        // assert
+        customClient.Should().NotBeNull();
+        customClient.Should().BeOfType<TestOrderClient>();
+    }
+
+    [Fact]
+    public void AddQueueClient_MultipleClients_CanBeRegistered()
+    {
+        // arrange
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddQueueClient<TestOrderClient>("orders", settings =>
+        {
+            settings.ConnectionString = "UseDevelopmentStorage=true";
+            settings.QueueName = "orders-queue";
+            settings.CreateIfNotExists = false;
+        });
+        services.AddQueueClient<TestNotificationClient>("notifications", settings =>
+        {
+            settings.ConnectionString = "UseDevelopmentStorage=true";
+            settings.QueueName = "notifications-queue";
+            settings.CreateIfNotExists = false;
+        });
+
+        // act
+        var serviceProvider = services.BuildServiceProvider();
+        var orderClient = serviceProvider.GetService<TestOrderClient>();
+        var notificationClient = serviceProvider.GetService<TestNotificationClient>();
+
+        // assert
+        orderClient.Should().NotBeNull();
+        notificationClient.Should().NotBeNull();
+        orderClient.Should().BeOfType<TestOrderClient>();
+        notificationClient.Should().BeOfType<TestNotificationClient>();
+    }
+
+    [Fact] 
+    public void AddQueueClient_WithExistingNamedClient_RegistersCorrectly()
+    {
+        // arrange
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAzureStorageQueueClient(options => 
+            options.AddClient("existing", y => 
+            {
+                y.ConnectionString = "UseDevelopmentStorage=true";
+                y.QueueName = "existing-queue";
+                y.CreateIfNotExists = false;
+            }));
+        services.AddQueueClient<TestOrderClient>("existing"); // Use existing configuration
+
+        // act
+        var serviceProvider = services.BuildServiceProvider();
+        var customClient = serviceProvider.GetService<TestOrderClient>();
+
+        // assert
+        customClient.Should().NotBeNull();
+        customClient.Should().BeOfType<TestOrderClient>();
+    }
+
+    [Fact]
+    public void AddQueueClient_WithDefaultClient_RegistersCorrectly()
+    {
+        // arrange
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAzureStorageQueueClient(options =>
+            options.AddDefaultClient(y =>
+            {
+                y.ConnectionString = "UseDevelopmentStorage=true";
+                y.QueueName = "default-queue";
+                y.CreateIfNotExists = false;
+            }));
+        services.AddQueueClient<TestOrderClient>(); // Use default client
+
+        // act
+        var serviceProvider = services.BuildServiceProvider();
+        var customClient = serviceProvider.GetService<TestOrderClient>();
+
+        // assert
+        customClient.Should().NotBeNull();
+        customClient.Should().BeOfType<TestOrderClient>();
+    }
+
     public class TestOrderClient
+    {
+        private readonly AzureStorageQueueClient _queueClient;
+
+        public TestOrderClient(AzureStorageQueueClient queueClient)
+        {
+            _queueClient = queueClient;
+        }
+
+        public async Task SendOrderAsync(TestObject order)
+        {
+            await _queueClient.SendMessageAsync(order);
+        }
+
+        public AzureStorageQueueClient GetUnderlyingClient() => _queueClient;
+    }
+
+    public class TestNotificationClient
+    {
+        private readonly AzureStorageQueueClient _queueClient;
+
+        public TestNotificationClient(AzureStorageQueueClient queueClient)
+        {
+            _queueClient = queueClient;
+        }
+
+        public async Task SendNotificationAsync(TestObject notification)
+        {
+            await _queueClient.SendMessageAsync(notification);
+        }
+
+        public AzureStorageQueueClient GetUnderlyingClient() => _queueClient;
+    }
+
+    // Legacy test client for backward compatibility tests
+    public class LegacyTestOrderClient
     {
         private readonly ITypedQueueClient<TestObject> _queueClient;
 
-        public TestOrderClient(ITypedQueueClient<TestObject> queueClient)
+        public LegacyTestOrderClient(ITypedQueueClient<TestObject> queueClient)
         {
             _queueClient = queueClient;
         }

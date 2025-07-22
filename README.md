@@ -114,9 +114,62 @@ services.AddAzureStorageQueueClient(x =>
 });
 ```
 
-### Add typed clients (similar to IHttpClientFactory)
+### Add typed clients (IHttpClientFactory pattern)
 
-The library now supports strongly-typed clients similar to the IHttpClientFactory pattern in ASP.NET Core:
+The library supports strongly-typed clients similar to the IHttpClientFactory pattern in ASP.NET Core. There are two main approaches:
+
+#### Option 1: Direct Configuration (Recommended)
+Register a client type with configuration in one step, just like `AddHttpClient<T>()`:
+
+```csharp
+// Register MyOrderClient with queue configuration
+services.AddQueueClient<MyOrderClient>(settings =>
+{
+    settings.ConnectionString = "[your_connection_string]";
+    settings.QueueName = "orders";
+    settings.CreateIfNotExists = true;
+});
+
+// Inject the client directly 
+public class OrderService
+{
+    private readonly MyOrderClient _orderClient;
+
+    public OrderService(MyOrderClient orderClient) // Direct injection, just like HttpClient pattern
+    {
+        _orderClient = orderClient;
+    }
+
+    public async Task ProcessOrderAsync(Order order)
+    {
+        await _orderClient.SendOrderAsync(order);
+    }
+}
+
+// Define the client class
+public class MyOrderClient
+{
+    private readonly AzureStorageQueueClient _queueClient;
+
+    public MyOrderClient(AzureStorageQueueClient queueClient) // Configured client injected automatically
+    {
+        _queueClient = queueClient;
+    }
+
+    public async Task SendOrderAsync(Order order)
+    {
+        await _queueClient.SendMessageAsync(order);
+    }
+
+    public async Task SendPriorityOrderAsync(Order order)
+    {
+        await _queueClient.SendMessageAsync(order, TimeSpan.Zero); // Immediate visibility
+    }
+}
+```
+
+#### Option 2: Message-Type-Centric Clients  
+Register typed clients for specific message types:
 
 ```csharp
 // Register a typed client for a specific message type using the default queue client
@@ -149,53 +202,33 @@ public class OrderService
 }
 ```
 
-### Custom Queue Client Types
-
-You can also register custom client types that encapsulate business logic, similar to how IHttpClientFactory works with custom client classes:
+#### Multiple Clients
+Register multiple client types with different configurations:
 
 ```csharp
-// Define a custom client class
-public class OrderQueueClient
+// Register different client types
+services.AddQueueClient<OrderClient>(settings =>
 {
-    private readonly ITypedQueueClient<OrderMessage> _queueClient;
+    settings.ConnectionString = "[your_connection_string]";
+    settings.QueueName = "orders";
+});
 
-    public OrderQueueClient(ITypedQueueClient<OrderMessage> queueClient)
-    {
-        _queueClient = queueClient;
-    }
-
-    public async Task SendOrderAsync(OrderMessage order)
-    {
-        // Add custom business logic here
-        await _queueClient.SendMessageAsync(order);
-    }
-
-    public async Task SendPriorityOrderAsync(OrderMessage order)
-    {
-        // Custom method with different behavior
-        await _queueClient.SendMessageAsync(order, TimeSpan.Zero); // Immediate visibility
-    }
-}
-
-// Register the custom client
-services.AddAzureStorageQueueClient(x => 
-    x.AddDefaultClient(y => Configuration.Bind(nameof(QueueClientSettings), y)));
-services.AddTypedQueueClient<OrderMessage>(); // Register the underlying typed client
-services.AddQueueClient<OrderQueueClient>(); // Register the custom client
-
-// Use the custom client
-public class OrderService
+services.AddQueueClient<NotificationClient>(settings =>
 {
-    private readonly OrderQueueClient _orderClient;
+    settings.ConnectionString = "[your_connection_string]";
+    settings.QueueName = "notifications";
+});
 
-    public OrderService(OrderQueueClient orderClient) // Direct injection of custom type
+// Use in services
+public class ECommerceService
+{
+    private readonly OrderClient _orderClient;
+    private readonly NotificationClient _notificationClient;
+
+    public ECommerceService(OrderClient orderClient, NotificationClient notificationClient)
     {
         _orderClient = orderClient;
-    }
-
-    public async Task ProcessOrderAsync(OrderMessage order)
-    {
-        await _orderClient.SendOrderAsync(order); // Use custom methods
+        _notificationClient = notificationClient;
     }
 }
 ```
@@ -232,9 +265,93 @@ public class MyClass
 }
 ```
 
+## Pattern Comparison
+
+The library supports both traditional factory pattern and modern IHttpClientFactory-style pattern:
+
+### Modern Pattern (Recommended)
+```csharp
+// Registration
+services.AddQueueClient<OrderClient>(settings =>
+{
+    settings.ConnectionString = "[your_connection_string]";
+    settings.QueueName = "orders";
+});
+
+// Usage - direct injection like IHttpClientFactory
+public class OrderService
+{
+    public OrderService(OrderClient client) { } // Clean, typed injection
+}
+```
+
+### Traditional Factory Pattern  
+```csharp
+// Registration  
+services.AddAzureStorageQueueClient(x => 
+    x.AddClient("orders", y => { /* configure */ }));
+
+// Usage - factory pattern
+public class OrderService  
+{
+    public OrderService(IQueueClientFactory factory)
+    {
+        _client = factory.GetQueueClient("orders"); // String-based lookup
+    }
+}
+```
+
+The modern pattern provides:
+- **Type Safety**: Compile-time checking instead of runtime string lookups
+- **Cleaner DI**: Direct injection like HttpClient pattern
+- **Better Tooling**: IntelliSense and refactoring support
+- **Familiar Pattern**: Consistent with IHttpClientFactory that developers already know
+
 ## Sending messages to an Azure storage account queue
 
 The following example shows the .NET Worker Service template where the class uses the `IHostedService` interface to send a message every five seconds.
+
+### Using Custom Client Types (Recommended)
+
+```csharp
+// Registration
+services.AddQueueClient<MessageSender>(settings =>
+{
+    settings.ConnectionString = "[your_connection_string]";
+    settings.QueueName = "messages";
+});
+
+// Client class
+public class MessageSender
+{
+    private readonly AzureStorageQueueClient _queueClient;
+    
+    public MessageSender(AzureStorageQueueClient queueClient) => _queueClient = queueClient;
+    
+    public async Task SendAsync<T>(T message, CancellationToken cancellationToken = default)
+    {
+        await _queueClient.SendMessageAsync(message, cancellationToken);
+    }
+}
+
+// Usage
+public class Sender : IHostedService
+{
+    private readonly MessageSender _messageSender;
+    
+    public Sender(MessageSender messageSender) => _messageSender = messageSender;
+    
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var myMessage = new MyMessage("Test");
+            await _messageSender.SendAsync(myMessage, cancellationToken);
+            await Task.Delay(5000);
+        }
+    }    
+}
+```
 
 ### Using the IQueueClientFactory
 
