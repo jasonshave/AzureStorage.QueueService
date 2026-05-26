@@ -11,19 +11,31 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    services:
+      # Azurite emulates Azure Storage so the integration tests run without a
+      # live storage account. The official image binds to 0.0.0.0, so the
+      # mapped ports are reachable from the runner at 127.0.0.1.
+      azurite:
+        image: mcr.microsoft.com/azure-storage/azurite
+        ports:
+          - 10000:10000
+          - 10001:10001
+          - 10002:10002
+
     steps:
     - uses: actions/checkout@v3
     - name: Setup .NET
       uses: actions/setup-dotnet@v3
       with:
-        dotnet-version: | 
+        dotnet-version: |
           8.0.x
     - name: Restore dependencies
       run: dotnet restore
     - name: Build
       run: dotnet build --no-restore
-    - name: Unit Tests
+    - name: Test
       env:
-        Storage__ConnectionString: ${{ secrets.STORAGECONNECTIONSTRING }}
-        Storage__QueueName: ${{ secrets.STORAGEQUEUENAME }}
+        # UseDevelopmentStorage=true targets the Azurite emulator above.
+        Storage__ConnectionString: "UseDevelopmentStorage=true"
+        Storage__QueueName: "integration-test-queue"
       run: dotnet test --no-build --verbosity normal -p:ParallelizeTestCollections=false
