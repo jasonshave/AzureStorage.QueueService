@@ -114,6 +114,125 @@ services.AddAzureStorageQueueClient(x =>
 });
 ```
 
+### Add typed clients (IHttpClientFactory pattern)
+
+The library supports strongly-typed clients similar to the IHttpClientFactory pattern in ASP.NET Core. There are two main approaches:
+
+#### Option 1: Direct Configuration (Recommended)
+Register a client type with configuration in one step, just like `AddHttpClient<T>()`:
+
+```csharp
+// Register MyOrderClient with queue configuration
+services.AddQueueClient<MyOrderClient>(settings =>
+{
+    settings.ConnectionString = "[your_connection_string]";
+    settings.QueueName = "orders";
+    settings.CreateIfNotExists = true;
+});
+
+// Inject the client directly 
+public class OrderService
+{
+    private readonly MyOrderClient _orderClient;
+
+    public OrderService(MyOrderClient orderClient) // Direct injection, just like HttpClient pattern
+    {
+        _orderClient = orderClient;
+    }
+
+    public async Task ProcessOrderAsync(Order order)
+    {
+        await _orderClient.SendOrderAsync(order);
+    }
+}
+
+// Define the client class
+public class MyOrderClient
+{
+    private readonly AzureStorageQueueClient _queueClient;
+
+    public MyOrderClient(AzureStorageQueueClient queueClient) // Configured client injected automatically
+    {
+        _queueClient = queueClient;
+    }
+
+    public async Task SendOrderAsync(Order order)
+    {
+        await _queueClient.SendMessageAsync(order);
+    }
+
+    public async Task SendPriorityOrderAsync(Order order)
+    {
+        await _queueClient.SendMessageAsync(order, TimeSpan.Zero); // Immediate visibility
+    }
+}
+```
+
+#### Option 2: Message-Type-Centric Clients  
+Register typed clients for specific message types:
+
+```csharp
+// Register a typed client for a specific message type using the default queue client
+services.AddAzureStorageQueueClient(x => 
+    x.AddDefaultClient(y => Configuration.Bind(nameof(QueueClientSettings), y)));
+services.AddTypedQueueClient<MyMessage>();
+
+// Register a typed client for a specific message type using a named queue client
+services.AddAzureStorageQueueClient(x => 
+    x.AddClient("orders", y => Configuration.Bind(nameof(OrderQueueSettings), y)));
+services.AddTypedQueueClient<OrderMessage>("orders");
+```
+
+This allows you to inject `ITypedQueueClient<TMessage>` directly instead of using the factory pattern:
+
+```csharp
+public class OrderService
+{
+    private readonly ITypedQueueClient<OrderMessage> _queueClient;
+
+    public OrderService(ITypedQueueClient<OrderMessage> queueClient)
+    {
+        _queueClient = queueClient;
+    }
+
+    public async Task ProcessOrderAsync(OrderMessage order)
+    {
+        await _queueClient.SendMessageAsync(order);
+    }
+}
+```
+
+#### Multiple Clients
+Register multiple client types with different configurations:
+
+```csharp
+// Register different client types
+services.AddQueueClient<OrderClient>(settings =>
+{
+    settings.ConnectionString = "[your_connection_string]";
+    settings.QueueName = "orders";
+});
+
+services.AddQueueClient<NotificationClient>(settings =>
+{
+    settings.ConnectionString = "[your_connection_string]";
+    settings.QueueName = "notifications";
+});
+
+// Use in services
+public class ECommerceService
+{
+    private readonly OrderClient _orderClient;
+    private readonly NotificationClient _notificationClient;
+
+    public ECommerceService(OrderClient orderClient, NotificationClient notificationClient)
+    {
+        _orderClient = orderClient;
+        _notificationClient = notificationClient;
+    }
+}
+```
+
 ## Using the IQueueClientFactory
 
 ### Example 1: Get a default queue client
@@ -146,9 +265,95 @@ public class MyClass
 }
 ```
 
+## Pattern Comparison
+
+The library supports both traditional factory pattern and modern IHttpClientFactory-style pattern:
+
+### Modern Pattern (Recommended)
+```csharp
+// Registration
+services.AddQueueClient<OrderClient>(settings =>
+{
+    settings.ConnectionString = "[your_connection_string]";
+    settings.QueueName = "orders";
+});
+
+// Usage - direct injection like IHttpClientFactory
+public class OrderService
+{
+    public OrderService(OrderClient client) { } // Clean, typed injection
+}
+```
+
+### Traditional Factory Pattern  
+```csharp
+// Registration  
+services.AddAzureStorageQueueClient(x => 
+    x.AddClient("orders", y => { /* configure */ }));
+
+// Usage - factory pattern
+public class OrderService  
+{
+    public OrderService(IQueueClientFactory factory)
+    {
+        _client = factory.GetQueueClient("orders"); // String-based lookup
+    }
+}
+```
+
+The modern pattern provides:
+- **Type Safety**: Compile-time checking instead of runtime string lookups
+- **Cleaner DI**: Direct injection like HttpClient pattern
+- **Better Tooling**: IntelliSense and refactoring support
+- **Familiar Pattern**: Consistent with IHttpClientFactory that developers already know
+
 ## Sending messages to an Azure storage account queue
 
 The following example shows the .NET Worker Service template where the class uses the `IHostedService` interface to send a message every five seconds.
+
+### Using Custom Client Types (Recommended)
+
+```csharp
+// Registration
+services.AddQueueClient<MessageSender>(settings =>
+{
+    settings.ConnectionString = "[your_connection_string]";
+    settings.QueueName = "messages";
+});
+
+// Client class
+public class MessageSender
+{
+    private readonly AzureStorageQueueClient _queueClient;
+    
+    public MessageSender(AzureStorageQueueClient queueClient) => _queueClient = queueClient;
+    
+    public async Task SendAsync<T>(T message, CancellationToken cancellationToken = default)
+    {
+        await _queueClient.SendMessageAsync(message, cancellationToken);
+    }
+}
+
+// Usage
+public class Sender : IHostedService
+{
+    private readonly MessageSender _messageSender;
+    
+    public Sender(MessageSender messageSender) => _messageSender = messageSender;
+    
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var myMessage = new MyMessage("Test");
+            await _messageSender.SendAsync(myMessage, cancellationToken);
+            await Task.Delay(5000);
+        }
+    }    
+}
+```
+
+### Using the IQueueClientFactory
 
 1. Inject the `IQueueClientFactory` interface and use as follows:
 
@@ -171,9 +376,34 @@ The following example shows the .NET Worker Service template where the class use
     }
     ```
 
+### Using Typed Clients
+
+Alternatively, you can use typed clients for a cleaner dependency injection experience:
+
+```csharp
+public class Sender : IHostedService
+{
+    private readonly ITypedQueueClient<MyMessage> _queueClient;
+    
+    public Sender(ITypedQueueClient<MyMessage> queueClient) => _queueClient = queueClient;
+    
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var myMessage = new MyMessage("Test");
+            await _queueClient.SendMessageAsync(myMessage, cancellationToken);
+            await Task.Delay(5000);
+        }
+    }    
+}
+```
+
 ## Receiving and handling messages from an Azure storage account queue
 
 The following example shows the .NET Worker Service template where the class uses the `IHostedService` interface to run a particular code block repeatedly. The application will receive the payload from the queue repeatedly.
+
+### Using the IQueueClientFactory
 
 1. Inject the `IQueueClientFactory` interface and use as follows:
 
@@ -203,6 +433,36 @@ The following example shows the .NET Worker Service template where the class use
         }
     }
     ```
+
+### Using Typed Clients
+
+Alternatively, you can use typed clients for a cleaner dependency injection experience:
+
+```csharp
+public class MySubscriber : IHostedService
+{
+    private readonly ITypedQueueClient<MyMessage> _queueClient;
+    private readonly IMyMessageHandler _myMessageHandler;
+
+    public MySubscriber(ITypedQueueClient<MyMessage> queueClient, IMyMessageHandler myMessageHandler)
+    {
+        _queueClient = queueClient;
+        _myMessageHandler = myMessageHandler;
+    }
+        
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await _queueClient.ReceiveMessagesAsync(
+                message => _myMessageHandler.HandleAsync(message),
+                exception => _myMessageHandler.HandleExceptionAsync(exception),
+                cancellationToken);
+            await Task.Delay(1000);
+        }
+    }
+}
+```
 
 ### Handling multiple messages
 

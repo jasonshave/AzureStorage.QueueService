@@ -5,8 +5,8 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddAzureStorageQueueClient(x => x.AddDefaultClient(settings =>
 {
-    settings.ConnectionString = builder.Configuration["Storage:ConnectionString"];
-    settings.QueueName = builder.Configuration["Storage:QueueName"];
+    settings.ConnectionString = builder.Configuration["Storage:ConnectionString"] ?? "UseDevelopmentStorage=true";
+    settings.QueueName = builder.Configuration["Storage:QueueName"] ?? "test-queue";
     settings.CreateIfNotExists = true;
 }));
 
