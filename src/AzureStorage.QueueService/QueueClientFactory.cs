@@ -1,4 +1,5 @@
-﻿using AzureStorage.QueueService.Telemetry;
+﻿using System.Collections.Concurrent;
+using AzureStorage.QueueService.Telemetry;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -6,22 +7,25 @@ namespace AzureStorage.QueueService;
 
 internal sealed class QueueClientFactory : IQueueClientFactory
 {
-    private readonly Dictionary<string, AzureStorageQueueClient> _namedClients = new();
-    private AzureStorageQueueClient? _defaultClient;
+    // Lazy<T> so two threads asking for the same client for the first time get one instance, not two.
+    private readonly ConcurrentDictionary<string, Lazy<AzureStorageQueueClient>> _clients = new(StringComparer.Ordinal);
     private readonly QueueClientSettingsRegistry _registry;
+    private readonly IOptionsMonitor<QueueClientSettings> _settings;
     private readonly IQueueClientBuilder _queueClientBuilder;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IMessageConverter _messageConverter;
     private readonly IOptions<QueueServiceTelemetrySettings> _telemetrySettings;
 
     public QueueClientFactory(
-        QueueClientSettingsRegistry registry, 
-        IQueueClientBuilder queueClientBuilder, 
-        ILoggerFactory loggerFactory, 
+        QueueClientSettingsRegistry registry,
+        IOptionsMonitor<QueueClientSettings> settings,
+        IQueueClientBuilder queueClientBuilder,
+        ILoggerFactory loggerFactory,
         IMessageConverter messageConverter,
         IOptions<QueueServiceTelemetrySettings> telemetrySettingsOptions)
     {
         _registry = registry;
+        _settings = settings;
         _queueClientBuilder = queueClientBuilder;
         _loggerFactory = loggerFactory;
         _messageConverter = messageConverter;
@@ -30,38 +34,53 @@ internal sealed class QueueClientFactory : IQueueClientFactory
 
     public AzureStorageQueueClient GetQueueClient(string clientName)
     {
-        // try named client
-        _namedClients.TryGetValue(clientName, out var azureStorageQueueClient);
-        if (azureStorageQueueClient is not null)
+        ArgumentNullException.ThrowIfNull(clientName);
+
+        if (!_registry.Contains(clientName))
         {
-            return azureStorageQueueClient;
+            var registered = _registry.ClientNames.Count == 0
+                ? "none"
+                : string.Join(", ", _registry.ClientNames.Select(name => $"'{name}'"));
+
+            throw new ApplicationException(
+                $"No queue client named '{clientName}' has been registered (registered named clients: {registered}). " +
+                $"Register it with services.AddAzureStorageQueueClient(x => x.AddClient(\"{clientName}\", ...)).");
         }
 
-        // not found so create one and add it
-        _registry.NamedClientsSettings.TryGetValue(clientName, out var customClientSettings);
-        if (customClientSettings is null)
-        {
-            throw new ApplicationException($"Settings for named client, {clientName} not found.");
-        }
-
-        var client = Create(customClientSettings);
-        _namedClients.TryAdd(clientName, client);
-
-        return client;
+        return GetOrCreate(clientName);
     }
 
     public AzureStorageQueueClient GetQueueClient()
     {
-        // use default client
-        if (_defaultClient is not null) return _defaultClient;
-        _defaultClient = Create(_registry.DefaultClientSettings);
-        return _defaultClient;
+        if (!_registry.HasDefaultClient)
+        {
+            throw new ApplicationException(
+                "No default queue client has been registered. Register one with " +
+                "services.AddAzureStorageQueueClient(x => x.AddDefaultClient(...)), or ask for a named client with GetQueueClient(name).");
+        }
+
+        return GetOrCreate(Options.DefaultName);
     }
 
-    private AzureStorageQueueClient Create(QueueClientSettings settings)
+    private AzureStorageQueueClient GetOrCreate(string clientName) =>
+        _clients.GetOrAdd(clientName, name => new Lazy<AzureStorageQueueClient>(() => Create(name), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+
+    private AzureStorageQueueClient Create(string clientName)
     {
-        var queueClient = _queueClientBuilder.CreateClient(settings);
-        var azureStorageQueueClient = new AzureStorageQueueClient(_messageConverter, queueClient, _loggerFactory, _telemetrySettings);
-        return azureStorageQueueClient;
+        var settings = _settings.Get(clientName);
+        var description = clientName == Options.DefaultName ? "The default queue client" : $"Queue client '{clientName}'";
+        var queueClient = _queueClientBuilder.CreateClient(description, settings);
+
+        var messageConverter = settings.SerializerOptions is null
+            ? _messageConverter
+            : new JsonQueueMessageConverter(settings.SerializerOptions);
+
+        return new AzureStorageQueueClient(
+            messageConverter,
+            queueClient,
+            _loggerFactory,
+            _telemetrySettings,
+            settings.VisibilityTimeout,
+            settings.CreateIfNotExists);
     }
 }

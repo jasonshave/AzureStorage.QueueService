@@ -23,9 +23,9 @@ jobs:
           - 10002:10002
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Setup .NET
-      uses: actions/setup-dotnet@v3
+      uses: actions/setup-dotnet@v4
       with:
         dotnet-version: |
           8.0.x
@@ -38,4 +38,4 @@ jobs:
         # UseDevelopmentStorage=true targets the Azurite emulator above.
         Storage__ConnectionString: "UseDevelopmentStorage=true"
         Storage__QueueName: "integration-test-queue"
-      run: dotnet test --no-build --verbosity normal -p:ParallelizeTestCollections=false
+      run: dotnet test --no-build --verbosity normal -p:ParallelizeTestCollections=false

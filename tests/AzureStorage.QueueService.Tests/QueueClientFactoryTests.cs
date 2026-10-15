@@ -1,205 +1,192 @@
-﻿using Azure.Identity;
-using Azure.Storage.Queues;
-using AzureStorage.QueueService.Telemetry;
-using FakeItEasy;
+﻿using Azure.Storage.Queues;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Moq;
 
 namespace AzureStorage.QueueService.Tests;
 
-public class QueueClientFactoryTests : BaseTestHost
+public class QueueClientFactoryTests
 {
-    private readonly IOptions<QueueServiceTelemetrySettings> _telemetrySettings = Options.Create(new QueueServiceTelemetrySettings());
+    private const string ConnectionString = "UseDevelopmentStorage=true";
 
-    [Fact]
-    public void QueueClientFactory_GetNamedClient_ReturnsClient()
+    /// <summary>
+    /// A service collection whose SDK client construction is stubbed out so no settings validation or network
+    /// access happens. Every call to the builder is recorded in <c>created</c>.
+    /// </summary>
+    private static (IServiceCollection Services, List<(string Description, QueueClientSettings Settings)> Created) CreateServices()
     {
-        // arrange
+        var created = new List<(string, QueueClientSettings)>();
+        var builder = new Mock<IQueueClientBuilder>();
+        builder.Setup(x => x.CreateClient(It.IsAny<string>(), It.IsAny<QueueClientSettings>()))
+            .Returns((string description, QueueClientSettings settings) =>
+            {
+                created.Add((description, settings));
+                return new Mock<QueueClient>().Object;
+            });
+
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y)));
+        services.AddSingleton(builder.Object); // registered first so the library's TryAdd keeps it
 
-        var serviceProvider = services.BuildServiceProvider();
-
-        var registry = serviceProvider.GetRequiredService<QueueClientSettingsRegistry>();
-        var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-        var messageConverter = serviceProvider.GetRequiredService<IMessageConverter>();
-        var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
-        var mockQueueClient = new Mock<QueueClient>();
-        mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        IQueueClientFactory subject = new QueueClientFactory(registry, mockQueueClientBuilder.Object, loggerFactory, messageConverter, _telemetrySettings);
-
-        // act
-        var queueClient = subject.GetQueueClient("foo");
-
-        // assert
-        queueClient.Should().NotBeNull();
+        return (services, created);
     }
 
     [Fact]
-    public void QueueClientFactory_AddStorageQueueCalledTwice_ReturnsClient()
+    public void GetNamedClient_ReturnsSameClientEachTime()
     {
         // arrange
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y)));
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y)));
-
-        var serviceProvider = services.BuildServiceProvider();
-
-        var registry = serviceProvider.GetRequiredService<QueueClientSettingsRegistry>();
-        var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-        var messageConverter = serviceProvider.GetRequiredService<IMessageConverter>();
-        var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
-        var mockQueueClient = new Mock<QueueClient>();
-        mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        IQueueClientFactory subject = new QueueClientFactory(registry, mockQueueClientBuilder.Object, loggerFactory, messageConverter, _telemetrySettings);
+        var (services, created) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => { y.ConnectionString = ConnectionString; y.QueueName = "foo-queue"; }));
+        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
 
         // act
-        var queueClient = subject.GetQueueClient("foo");
+        var client1 = factory.GetQueueClient("foo");
+        var client2 = factory.GetQueueClient("foo");
 
         // assert
-        queueClient.Should().NotBeNull();
+        client1.Should().BeSameAs(client2);
+        created.Should().ContainSingle().Which.Settings.QueueName.Should().Be("foo-queue");
     }
 
     [Fact]
-    public void GetNamedClientTwice_ReturnsSameClient()
-    {
-        // arrange        
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y)));
-
-        var serviceProvider = services.BuildServiceProvider();
-
-        var registry = serviceProvider.GetRequiredService<QueueClientSettingsRegistry>();
-        var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-        var messageConverter = serviceProvider.GetRequiredService<IMessageConverter>();
-        var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
-        var mockQueueClient = new Mock<QueueClient>();
-        mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        IQueueClientFactory subject = new QueueClientFactory(registry, mockQueueClientBuilder.Object, loggerFactory, messageConverter, _telemetrySettings);
-
-        // act
-        var queueClient1 = subject.GetQueueClient("foo");
-        var queueClient2 = subject.GetQueueClient("foo");
-
-        // assert
-        queueClient1.Should().NotBeNull();
-        queueClient2.Should().NotBeNull();
-        queueClient1.Should().BeSameAs(queueClient2);
-    }
-
-    [Fact]
-    public void RegisterMultipleNamedClient_ReturnsCorrectClient()
+    public void RegisterMultipleNamedClients_EachGetsItsOwnSettings()
     {
         // arrange
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddAzureStorageQueueClient(options =>
+        var (services, created) = CreateServices();
+        services.AddAzureStorageQueueClient(x =>
         {
-            options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y));
-            options.AddClient("bar", y => Configuration.Bind("QueueClientSettings", y));
+            x.AddClient("foo", y => { y.ConnectionString = ConnectionString; y.QueueName = "foo-queue"; });
+            x.AddClient("bar", y => { y.ConnectionString = ConnectionString; y.QueueName = "bar-queue"; });
         });
-
-        var serviceProvider = services.BuildServiceProvider();
-
-        var registry = serviceProvider.GetRequiredService<QueueClientSettingsRegistry>();
-        var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-        var messageConverter = serviceProvider.GetRequiredService<IMessageConverter>();
-        var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
-        var mockQueueClient = new Mock<QueueClient>();
-        mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        IQueueClientFactory subject = new QueueClientFactory(registry, mockQueueClientBuilder.Object, loggerFactory, messageConverter, _telemetrySettings);
+        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
 
         // act
-        var queueClient1 = subject.GetQueueClient("foo");
-        var queueClient2 = subject.GetQueueClient("bar");
+        var foo = factory.GetQueueClient("foo");
+        var bar = factory.GetQueueClient("bar");
 
         // assert
-        queueClient1.Should().NotBeNull();
-        queueClient2.Should().NotBeNull();
+        foo.Should().NotBeSameAs(bar);
+        created.Select(c => c.Settings.QueueName).Should().BeEquivalentTo("foo-queue", "bar-queue");
     }
 
     [Fact]
-    public void GetDefaultClient_ReturnsValidClient()
+    public void AddClientTwiceForSameName_ComposesConfiguration()
     {
         // arrange
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddDefaultClient(y => Configuration.Bind("QueueClientSettings", y)));
-
-        var serviceProvider = services.BuildServiceProvider();
-
-        var registry = serviceProvider.GetRequiredService<QueueClientSettingsRegistry>();
-        var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-        var messageConverter = serviceProvider.GetRequiredService<IMessageConverter>();
-        var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
-        var mockQueueClient = new Mock<QueueClient>();
-        mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        IQueueClientFactory subject = new QueueClientFactory(registry, mockQueueClientBuilder.Object, loggerFactory, messageConverter, _telemetrySettings);
+        var (services, created) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => y.ConnectionString = ConnectionString));
+        services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => y.QueueName = "foo-queue"));
+        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
 
         // act
-        var queueClient = subject.GetQueueClient();
+        factory.GetQueueClient("foo");
 
         // assert
-        queueClient.Should().NotBeNull();
+        var settings = created.Should().ContainSingle().Which.Settings;
+        settings.ConnectionString.Should().Be(ConnectionString);
+        settings.QueueName.Should().Be("foo-queue");
     }
 
     [Fact]
-    public void GetUnregisteredClient_Throws()
+    public void SeparateServiceCollections_DoNotShareSettings()
     {
         // arrange
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddClient("foo", y => Configuration.Bind("QueueClientSettings", y)));
-
-        var serviceProvider = services.BuildServiceProvider();
-
-        var registry = serviceProvider.GetRequiredService<QueueClientSettingsRegistry>();
-        var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-        var messageConverter = serviceProvider.GetRequiredService<IMessageConverter>();
-        var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
-        var mockQueueClient = new Mock<QueueClient>();
-        mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        IQueueClientFactory subject = new QueueClientFactory(registry, mockQueueClientBuilder.Object, loggerFactory, messageConverter, _telemetrySettings);
+        var (servicesA, createdA) = CreateServices();
+        var (servicesB, createdB) = CreateServices();
+        servicesA.AddAzureStorageQueueClient(x => x.AddDefaultClient(y => { y.ConnectionString = ConnectionString; y.QueueName = "queue-a"; }));
+        servicesB.AddAzureStorageQueueClient(x => x.AddDefaultClient(y => { y.ConnectionString = ConnectionString; y.QueueName = "queue-b"; }));
 
         // act
-        subject.Invoking(x => x.GetQueueClient("bar")).Should().Throw<ApplicationException>(because: "The client name wasn't registered");
+        servicesA.BuildServiceProvider().GetRequiredService<IQueueClientFactory>().GetQueueClient();
+        servicesB.BuildServiceProvider().GetRequiredService<IQueueClientFactory>().GetQueueClient();
+
+        // assert
+        createdA.Should().ContainSingle().Which.Settings.QueueName.Should().Be("queue-a");
+        createdB.Should().ContainSingle().Which.Settings.QueueName.Should().Be("queue-b");
     }
 
     [Fact]
-    public void CreateClient_WithCorrectSettings_Creates()
+    public void GetUnregisteredClient_ThrowsNamingTheRegisteredClients()
     {
         // arrange
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddAzureStorageQueueClient(options => options.AddDefaultClient(y =>
+        var (services, _) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => y.ConnectionString = ConnectionString));
+        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
+
+        // act/assert
+        factory.Invoking(x => x.GetQueueClient("bar")).Should().Throw<ApplicationException>()
+            .WithMessage("*'bar'*").WithMessage("*'foo'*");
+    }
+
+    [Fact]
+    public void GetDefaultClient_WhenNoneRegistered_Throws()
+    {
+        // arrange
+        var (services, _) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => y.ConnectionString = ConnectionString));
+        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
+
+        // act/assert
+        factory.Invoking(x => x.GetQueueClient()).Should().Throw<ApplicationException>().WithMessage("*AddDefaultClient*");
+    }
+
+    [Fact]
+    public void Clients_CanBeInjectedDirectly()
+    {
+        // arrange
+        var (services, _) = CreateServices();
+        services.AddAzureStorageQueueClient(x =>
         {
-            y.TokenCredential = new DefaultAzureCredential();
-            y.EndpointUri = new Uri("https://fake.com");
-            y.QueueName = "foo";
-            y.CreateIfNotExists = true;
-        }));
+            x.AddClient("foo", y => { y.ConnectionString = ConnectionString; y.QueueName = "foo-queue"; });
+            x.AddDefaultClient(y => { y.ConnectionString = ConnectionString; y.QueueName = "default-queue"; });
+        });
+        var provider = services.BuildServiceProvider();
+        var factory = provider.GetRequiredService<IQueueClientFactory>();
 
-        var serviceProvider = services.BuildServiceProvider();
+        // act/assert
+        provider.GetRequiredKeyedService<AzureStorageQueueClient>("foo").Should().BeSameAs(factory.GetQueueClient("foo"));
+        provider.GetRequiredKeyedService<IAzureStorageQueueClient>("foo").Should().BeSameAs(factory.GetQueueClient("foo"));
+        provider.GetRequiredService<AzureStorageQueueClient>().Should().BeSameAs(factory.GetQueueClient());
+        provider.GetRequiredService<IAzureStorageQueueClient>().Should().BeSameAs(factory.GetQueueClient());
+    }
 
-        var registry = serviceProvider.GetRequiredService<QueueClientSettingsRegistry>();
-        var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
-        var messageConverter = serviceProvider.GetRequiredService<IMessageConverter>();
-        var mockQueueClientBuilder = new Mock<IQueueClientBuilder>();
-        var mockQueueClient = new Mock<QueueClient>();
-        mockQueueClientBuilder.Setup(x => x.CreateClient(It.IsAny<QueueClientSettings>())).Returns(mockQueueClient.Object);
-        IQueueClientFactory subject = new QueueClientFactory(registry, mockQueueClientBuilder.Object, loggerFactory, messageConverter, _telemetrySettings);
+    [Fact]
+    public void AddClient_FromConfigurationSection_BindsSettings()
+    {
+        // arrange
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Queues:Foo:ConnectionString"] = ConnectionString,
+            ["Queues:Foo:QueueName"] = "foo-queue",
+            ["Queues:Foo:VisibilityTimeout"] = "00:05:00",
+        }).Build();
+        var (services, created) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("foo", configuration.GetSection("Queues:Foo")));
+        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
 
         // act
-        var client = subject.GetQueueClient();
+        factory.GetQueueClient("foo");
 
         // assert
-        client.Should().NotBeNull();
+        var settings = created.Should().ContainSingle().Which.Settings;
+        settings.QueueName.Should().Be("foo-queue");
+        settings.VisibilityTimeout.Should().Be(TimeSpan.FromMinutes(5));
+    }
+
+    [Fact]
+    public void ConcurrentFirstCalls_CreateOneClient()
+    {
+        // arrange
+        var (services, created) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => y.ConnectionString = ConnectionString));
+        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
+
+        // act
+        var clients = Enumerable.Range(0, 32).AsParallel().Select(_ => factory.GetQueueClient("foo")).ToList();
+
+        // assert
+        created.Should().ContainSingle();
+        clients.Distinct().Should().ContainSingle();
     }
 }

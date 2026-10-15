@@ -6,7 +6,7 @@ namespace AzureStorage.QueueService.Telemetry;
 internal class QueueServiceDiagnostics
 {
     public static string ServiceName { get; } = "AzureStorage.QueueService";
-    
+
     public static ActivitySource ActivitySource { get; } = new ActivitySource(ServiceName);
 
     public static Meter Meter { get; } = new Meter(ServiceName);
@@ -64,9 +64,11 @@ internal class QueueServiceDiagnostics
         );
     }
 
+    // Event names only. An ActivityEvent captures its timestamp when constructed, so a shared static instance
+    // would stamp every event with the time the process started.
     public struct Events
-    {        
-        public static ActivityEvent QueueMessageReceived = new ActivityEvent("queue.message_received");
-        public static ActivityEvent QueueMessageProcessed = new ActivityEvent("queue.message_processed");
+    {
+        public const string QueueMessageReceived = "queue.message_received";
+        public const string QueueMessageProcessed = "queue.message_processed";
     }
 }

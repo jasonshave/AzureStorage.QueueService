@@ -36,10 +36,9 @@ public static class MetricExtensions
         }
         finally
         {
-            var elapsedSeconds = Stopwatch.GetElapsedTime(start).TotalSeconds;
-            histogram.Record(elapsedSeconds, tags);
-
+            // TagList is a struct, so the tag has to be added before the record call to have any effect.
             tags.Add(QueueServiceDiagnostics.Names.QueueProcessSuccess, success);
+            histogram.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, tags);
         }
     }
 }

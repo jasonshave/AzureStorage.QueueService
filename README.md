@@ -19,6 +19,9 @@ You will need to create an Azure Storage account in the Azure portal using a uni
 - Sending a message will automatically serialize the payload to `BinaryData`.
 - By default one message is pulled when `ReceiveMessagesAsync<T>` is called, however this is configurable.
 - If your handler does not throw, messages are automatically removed from the queue otherwise the message is returned to the queue for delivery again.
+- `ReceiveMessagesAsync<T>` never throws for failures in the queue read, the deserialization, your handler, the delete, or your exception handler. Every failure is logged and passed to your exception handler, and the remaining messages in the batch are still processed. The only exception that escapes is `OperationCanceledException` for your own cancellation token, so a transient storage error cannot take down your host.
+- A received message is hidden from other consumers for the *visibility timeout* (30 seconds unless you set `VisibilityTimeout`). If your handler runs longer than that, the message becomes visible again, another consumer can pick it up, and the delete on this side fails and is reported to your exception handler. Set `VisibilityTimeout` longer than your slowest handler multiplied by the number of messages you receive per call.
+- A message that can never be processed (for example, invalid JSON) is redelivered every time its visibility timeout expires. Watch for repeated `DeserializationException`s in your exception handler and in the log, which includes the message's dequeue count.
 - Automatic deserialization uses the `System.Text.Json` deserialization behavior. This can be overridden by specifying your own `JsonSerializerOptions` as seen below.
 - You can 'peek' messages using `PeekMessages<T>` which returns a collection but doesn't remove them from the queue.
 
@@ -32,7 +35,8 @@ You will need to create an Azure Storage account in the Azure portal using a uni
         "QueueClientSettings" : {
             "ConnectionString": "[your_connection_string]",
             "QueueName": "[your_queue_name]",
-            "CreateIfNotExists": true
+            "CreateIfNotExists": true,
+            "VisibilityTimeout": "00:02:00"
         }
     }
     ```
@@ -56,7 +60,20 @@ You will need to create an Azure Storage account in the Azure portal using a uni
     }));
    ```
 
-4. You can create your queue in advance or allow the library to create it during runtime by setting the `CreateIfNotExists` property to `true`.
+4. You can create your queue in advance or allow the library to create it during runtime by setting the `CreateIfNotExists` property to `true`. The queue is created the first time the client is used, not when it is resolved from dependency injection.
+
+### Per-client settings
+
+Every client has its own `QueueClientSettings`:
+
+| Setting | What it does |
+|---|---|
+| `ConnectionString` + `QueueName` | Connect with a storage account connection string. |
+| `EndpointUri` + `TokenCredential` | Connect with an identity instead. The URI includes the queue name. |
+| `CreateIfNotExists` | Create the queue on first use if it does not exist. |
+| `VisibilityTimeout` | How long a received message is hidden from other consumers while your handler runs. Defaults to 30 seconds. |
+| `SerializerOptions` | `JsonSerializerOptions` for this client only, used for both sending and receiving. |
+| `ClientOptions` | `QueueClientOptions` for the underlying Azure SDK client: retry policy, diagnostics, and `MessageEncoding`. Set `MessageEncoding = QueueMessageEncoding.Base64` for queues shared with Azure Functions or older SDKs. |
 
 ## Configure dependency injection
 
@@ -98,6 +115,10 @@ services.AddAzureStorageQueueClient(x =>
 // get configuration from IConfiguration binder
 services.AddAzureStorageQueueClient(x => 
     x.AddClient("MyClient1", y => Configuration.Bind(nameof(QueueClientSettings), y)));
+
+// or bind a configuration section directly
+services.AddAzureStorageQueueClient(x => 
+    x.AddClient("MyClient1", Configuration.GetSection("Queues:MyClient1")));
 ```
 
 ```csharp
@@ -134,7 +155,7 @@ public class MyClass
 ### Example 2: Get a named client
 
 ```csharp
-// inject the IQueueClientFactory and get a default client
+// inject the IQueueClientFactory and get a named client
 public class MyClass
 {
     private readonly AzureStorageQueueClient _queueClient;
@@ -146,26 +167,43 @@ public class MyClass
 }
 ```
 
+### Example 3: Inject a client directly
+
+Registered clients are also available from dependency injection without going through the factory. The default client is a plain singleton; named clients are keyed services.
+
+```csharp
+public class MyClass
+{
+    public MyClass(
+        IAzureStorageQueueClient defaultClient,
+        [FromKeyedServices("MyClient1")] IAzureStorageQueueClient namedClient)
+    {
+    }
+}
+```
+
+Depend on `IAzureStorageQueueClient` rather than the concrete `AzureStorageQueueClient` if you want to substitute a fake in your own unit tests.
+
 ## Sending messages to an Azure storage account queue
 
-The following example shows the .NET Worker Service template where the class uses the `IHostedService` interface to send a message every five seconds.
+The following example shows the .NET Worker Service template where a `BackgroundService` sends a message every five seconds. Use `BackgroundService.ExecuteAsync` for loops like this rather than `IHostedService.StartAsync`: the host waits for `StartAsync` to return before it finishes starting, so a loop there blocks startup.
 
 1. Inject the `IQueueClientFactory` interface and use as follows:
 
     ```csharp
-    public class Sender : IHostedService
+    public class Sender : BackgroundService
     {
         private readonly AzureStorageQueueClient _queueClient;
         
         public Sender(IQueueClientFactory queueClientFactory) => _queueClient = queueClientFactory.GetQueueClient();
         
-        public async Task StartAsync(CancellationToken cancellationToken)
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            while (!cancellationToken.IsCancellationRequested)
+            while (!stoppingToken.IsCancellationRequested)
             {
                 var myMessage = new MyMessage("Test");
-                await _queueClient.SendMessageAsync<MyMessage>(myMessage, cancellationToken);
-                await Task.Delay(5000);
+                await _queueClient.SendMessageAsync(myMessage, cancellationToken: stoppingToken);
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
         }    
     }
@@ -173,32 +211,48 @@ The following example shows the .NET Worker Service template where the class use
 
 ## Receiving and handling messages from an Azure storage account queue
 
-The following example shows the .NET Worker Service template where the class uses the `IHostedService` interface to run a particular code block repeatedly. The application will receive the payload from the queue repeatedly.
+The following example shows the .NET Worker Service template where a `BackgroundService` polls the queue repeatedly. Your message handler receives the deserialized payload and the queue's metadata; your exception handler receives anything that went wrong while receiving, deserializing, handling or deleting a message.
+
+`ReceiveMessagesAsync` reports failures through your exception handler instead of throwing, so the loop below keeps running through transient storage errors. The `try`/`catch` is still worth having: it protects you from anything thrown by your own code outside the handlers, and an unhandled exception in `ExecuteAsync` stops the whole host by default in .NET 6 and later.
 
 1. Inject the `IQueueClientFactory` interface and use as follows:
 
     ```csharp
-    public class MySubscriber : IHostedService
+    public class MySubscriber : BackgroundService
     {
         private readonly AzureStorageQueueClient _queueClient;
-        private readonly IMyMessageHandler _myMessageHandler; // see optional handler below
+        private readonly IMyMessageHandler _myMessageHandler; // your own handler
+        private readonly ILogger<MySubscriber> _logger;
     
-        public MySubscriber(IQueueClientFactory queueClientFactory, IMyMessageHandler myMessageHandler)
+        public MySubscriber(IQueueClientFactory queueClientFactory, IMyMessageHandler myMessageHandler, ILogger<MySubscriber> logger)
         {
             // get the default queue client
             _queueClient = queueClientFactory.GetQueueClient();
             _myMessageHandler = myMessageHandler;
+            _logger = logger;
         }
             
-        public async Task StartAsync(CancellationToken cancellationToken)
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            while (!cancellationToken.IsCancellationRequested)
+            while (!stoppingToken.IsCancellationRequested)
             {
-                await _queueClient.ReceiveMessagesAsync<MyMessage>(
-                    message => _myMessageHandler.HandleAsync(message),
-                    exception => _myMessageHandler.HandleExceptionAsync(exception),
-                    cancellationToken);
-                await Task.Delay(1000);
+                try
+                {
+                    await _queueClient.ReceiveMessagesAsync<MyMessage>(
+                        (message, metadata) => _myMessageHandler.HandleAsync(message),
+                        (exception, metadata) => _myMessageHandler.HandleExceptionAsync(exception),
+                        cancellationToken: stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Unexpected error while polling the queue.");
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
             }
         }
     }
@@ -206,10 +260,10 @@ The following example shows the .NET Worker Service template where the class use
 
 ### Handling multiple messages
 
-The library allows you to pull multiple messages by specifying the `maxMessage` count as an integer in the `ReceiveMessagesAsync<T>()` method. These are sent to the handler as individual messages but pulled from the queue as a batch the consuming application would hold a lock on for the default duration used in the Azure Storage Queue library.
+The library allows you to pull multiple messages by specifying the `numMessages` count in the `ReceiveMessagesAsync<T>()` method (the service allows at most 32). These are sent to the handler one at a time but pulled from the queue as a batch, and every message in the batch is hidden from other consumers for the visibility timeout from the moment the batch is received. Set `VisibilityTimeout` so that it covers the whole batch, otherwise the last messages in the batch may become visible again before you reach them.
 
 ```csharp
-await _queueClient.ReceiveMessagesAsync<MyMessage>(HandleMessage, HandleException, cancellationToken, 10);
+await _queueClient.ReceiveMessagesAsync<MyMessage>(HandleMessage, HandleException, numMessages: 10, cancellationToken: stoppingToken);
 ```
 
 ## OpenTelemetry Support
@@ -240,7 +294,22 @@ The following metrics have also been configured and read through tools like Azur
 - `queue_messages_received_total`
 - `queue_messages_sent_total`
 - `queue_messages_processed_total`
-- `queue_message_processing_duration_seconds`
+- `queue_messages_failed_total`
+- `queue_message_processing_duration_seconds` (tagged with `queue.process_success`)
+- `queue_message_size_bytes`
+
+All metrics are tagged with `queue.name`, so clients for different queues can be told apart.
+
+## Upgrading to 2.1
+
+No code changes are required, but note these behaviour changes:
+
+- `ReceiveMessagesAsync<T>` no longer throws when the queue read fails, when your exception handler throws, or when a message cannot be deleted. All of these now go to your exception handler (with `null` metadata when the read itself failed) and are logged. If you relied on catching a failed read in your own loop, that catch block will no longer fire.
+- A queue configured with `CreateIfNotExists` is created on the first send, receive or peek instead of when the client is resolved from dependency injection, so startup no longer makes a blocking network call.
+- Client configuration delegates run when the client is first requested rather than when `AddAzureStorageQueueClient` is called, and registering the same client name twice now adds to its configuration instead of ignoring the second registration.
+- Custom `JsonSerializerOptions` are now applied when sending messages as well as when receiving them. If you configured a naming policy, messages you send will change shape accordingly.
+- `Azure.Identity` is no longer a dependency of this package. Add it to your own project if you use `DefaultAzureCredential`.
+- The package now depends on `Azure.Storage.Queues` 12.28 and `Microsoft.Extensions.*` 10.0. The 10.0 packages still target .NET 8, so no framework change is needed, but any `Microsoft.Extensions.*` packages you reference directly will be raised to 10.0 as well. This floor comes from the Azure SDK itself (`Azure.Core` 1.60 requires it), so it applies to any project on the current Azure SDK.
 
 ## License
 
