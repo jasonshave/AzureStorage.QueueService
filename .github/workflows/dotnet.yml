@@ -11,21 +11,20 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    services:
-      # Azurite emulates Azure Storage so the integration tests run without a
-      # live storage account. The official image binds to 0.0.0.0, so the
-      # mapped ports are reachable from the runner at 127.0.0.1.
-      azurite:
-        image: mcr.microsoft.com/azure-storage/azurite
-        ports:
-          - 10000:10000
-          - 10001:10001
-          - 10002:10002
-
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+    # Azurite emulates Azure Storage so the integration tests run without a
+    # live storage account. It is started with docker run rather than as a
+    # service container because it needs --skipApiVersionCheck: the Azure SDK
+    # sends an API version newer than Azurite knows about and Azurite rejects
+    # it with a 400 otherwise. Only the queue port (10001) is mapped.
+    - name: Start Azurite
+      run: |
+        docker run -d --name azurite -p 10001:10001 \
+          mcr.microsoft.com/azure-storage/azurite \
+          azurite --queueHost 0.0.0.0 --blobHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck --silent
     - name: Setup .NET
-      uses: actions/setup-dotnet@v3
+      uses: actions/setup-dotnet@v4
       with:
         dotnet-version: |
           8.0.x
@@ -38,4 +37,4 @@ jobs:
         # UseDevelopmentStorage=true targets the Azurite emulator above.
         Storage__ConnectionString: "UseDevelopmentStorage=true"
         Storage__QueueName: "integration-test-queue"
-      run: dotnet test --no-build --verbosity normal -p:ParallelizeTestCollections=false
+      run: dotnet test --no-build --verbosity normal -p:ParallelizeTestCollections=false
