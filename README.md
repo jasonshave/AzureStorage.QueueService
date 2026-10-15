@@ -1,6 +1,9 @@
 # Azure Storage Queue Service library
 
-<img src="./images/logo.jpg" alt="Logo" width=75 />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./images/logo-dark.svg">
+  <img src="./images/logo-light.svg" alt="Unifinity" width="75" />
+</picture>
 
 [![.NET](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/dotnet.yml/badge.svg)](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/dotnet.yml)
 [![Nuget](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/nuget.yml/badge.svg)](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/nuget.yml)
@@ -314,3 +317,5 @@ No code changes are required, but note these behaviour changes:
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE.md](license.md) file for details.
+
+The logo is the Unifinity Software Corporation brand mark, taken unchanged from the Unifinity brand kit. It is not covered by the MIT licence.

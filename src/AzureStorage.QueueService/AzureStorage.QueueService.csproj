@@ -14,7 +14,7 @@
 		<Copyright>Unifinity Software Corporation</Copyright>
 		<PackageTags>Azure, Azure Storage, Azure Storage Queue, Storage Queue, Queue Service, Jason Shave, Unifinity Software Corporation</PackageTags>
 		<PackageProjectUrl>https://github.com/jasonshave/JasonShave.AzureStorage.QueueService</PackageProjectUrl>
-		<PackageIcon>logo.jpg</PackageIcon>
+		<PackageIcon>logo.png</PackageIcon>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<RepositoryType>git</RepositoryType>
 		<RepositoryUrl>https://github.com/jasonshave/JasonShave.AzureStorage.QueueService</RepositoryUrl>
@@ -46,7 +46,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<None Include="..\..\images\logo.jpg">
+		<None Include="..\..\images\logo.png">
 			<Pack>True</Pack>
 			<PackagePath>\</PackagePath>
 		</None>
