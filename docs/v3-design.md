@@ -59,6 +59,12 @@ Configuration errors throw `InvalidOperationException` (was `ApplicationExceptio
 
 ## Consumption
 
+Three ways to consume, from most to least opinionated. None is mandatory.
+
+1. **`AddProcessor<TMessage, THandler>()`** — recommended. The library owns the loop: backoff, lease renewal, poison queue, cancellation, drain. The customer writes a handler class.
+2. **Your own `BackgroundService` over `IQueueReceiver`** — for customers who want the loop. `ReceiveAsync<T>` returns messages with their identity and explicit `Complete` / `Abandon` / `DeadLetter` / `RenewLock`; the caller owns backoff, renewal and error handling, and transport failures throw so the caller's loop can react.
+3. **The 2.x façade** — `AzureStorageQueueClient.ReceiveMessagesAsync(handle, handleException, …)` keeps working, `[Obsolete]`, for the whole of 3.x.
+
 Three interfaces, all registered per client (keyed by name) and for the default client (unkeyed):
 
 ```csharp
