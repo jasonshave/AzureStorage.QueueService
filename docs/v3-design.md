@@ -55,7 +55,9 @@ Third parties extend this with their own extension methods on `IQueueClientBuild
 
 `QueueClientSettings` keeps `ConnectionString`, `QueueName`, `EndpointUri`, `TokenCredential`, `CreateIfNotExists`, `VisibilityTimeout`, `ClientOptions`. `SerializerOptions` moves to `UseJsonSerializer`. `SectionName` is removed (it never matched the README).
 
-Configuration errors throw `InvalidOperationException` (was `ApplicationException`), naming the client and what is missing. `AddAzureStorageQueueClient(...).ValidateOnStart()` is available for fail-fast at host start.
+Configuration errors throw `InvalidOperationException` (was `ApplicationException`), naming the client and what is missing. `queues.ValidateOnStart()` on the parent builder (inside the configure delegate) opts into fail-fast at host start; `AddAzureStorageQueueClient` keeps returning `IServiceCollection` so chained calls still compile.
+
+The current internal `IQueueClientBuilder` (which constructs SDK clients from settings) is renamed `ISdkQueueClientFactory` to free the name for the public per-client builder.
 
 ## Consumption
 
@@ -77,8 +79,10 @@ public interface IQueueSender
 public interface IQueueReceiver
 {
     string QueueName { get; }
+    /// visibilityTimeout defaults to QueueClientSettings.VisibilityTimeout, then the service default (30 s). maxMessages is 1..32.
     ValueTask<IReadOnlyList<QueueMessage<T>>> ReceiveAsync<T>(int maxMessages = 1, TimeSpan? visibilityTimeout = null, CancellationToken cancellationToken = default);
-    ValueTask<IReadOnlyList<QueueMessage<T>>> PeekAsync<T>(int maxMessages = 1, CancellationToken cancellationToken = default);
+    /// Peeked messages have no pop receipt, so they get a type with no operations on it.
+    ValueTask<IReadOnlyList<PeekedQueueMessage<T>>> PeekAsync<T>(int maxMessages = 1, CancellationToken cancellationToken = default);
 }
 
 /// Sender + receiver + admin for one queue. What IQueueClientFactory hands out.
@@ -106,8 +110,22 @@ Injection: `IStorageQueue` / `IQueueSender` / `IQueueReceiver` for the default c
 ### The message
 
 ```csharp
+public sealed class PeekedQueueMessage<T>
+{
+    public string MessageId { get; }
+    public long DequeueCount { get; }
+    public DateTimeOffset? InsertedOn { get; }
+    public DateTimeOffset? ExpiresOn { get; }
+    public BinaryData RawBody { get; }
+    public T? Body { get; }
+    public DeserializationException? Error { get; }
+}
+
 public sealed class QueueMessage<T>
 {
+    /// Public so a test that stubs IQueueReceiver can build messages; the library passes its real operations.
+    public QueueMessage(QueueMessageInfo info, BinaryData rawBody, T? body, DeserializationException? error, IQueueMessageOperations operations);
+
     public string MessageId { get; }
     public string PopReceipt { get; }          // changes after Renew/Abandon
     public long DequeueCount { get; }
@@ -116,21 +134,33 @@ public sealed class QueueMessage<T>
     public DateTimeOffset? NextVisibleOn { get; }
     public BinaryData RawBody { get; }
 
-    /// Null when deserialization failed; see Error.
+    /// Null when deserialization failed (see Error) or when the body was JSON null.
     public T? Body { get; }
     /// Set when the body could not be deserialized. The message is still returned so the caller can dead-letter it.
     public DeserializationException? Error { get; }
+    /// True once Complete or DeadLetter has succeeded. Further operations throw InvalidOperationException.
+    public bool IsSettled { get; }
 
     public ValueTask CompleteAsync(CancellationToken cancellationToken = default);                       // delete
     public ValueTask AbandonAsync(TimeSpan? visibilityTimeout = null, CancellationToken cancellationToken = default); // make visible again (now, or after a delay)
     public ValueTask RenewLockAsync(TimeSpan visibilityTimeout, CancellationToken cancellationToken = default);       // extend the lease; updates PopReceipt
     public ValueTask DeadLetterAsync(string? reason = null, CancellationToken cancellationToken = default);            // copy to the poison queue, then delete
 }
+
+/// What the library implements over the SDK client; what a test stubs.
+public interface IQueueMessageOperations
+{
+    ValueTask DeleteAsync(string messageId, string popReceipt, CancellationToken cancellationToken);
+    ValueTask<UpdateReceipt> UpdateVisibilityAsync(string messageId, string popReceipt, TimeSpan visibilityTimeout, CancellationToken cancellationToken);
+    ValueTask DeadLetterAsync(string messageId, string popReceipt, BinaryData rawBody, string? reason, CancellationToken cancellationToken);
+}
 ```
+
+Operations on one `QueueMessage<T>` are serialized internally (a renewal timer and a handler calling `CompleteAsync` at the same moment must not race on `PopReceipt`), and every operation uses the latest receipt. After `IsSettled`, further operations throw.
 
 `ReceiveAsync` never throws for a bad body — it returns the message with `Error` set — so a poison message can be handled instead of pinning the consumer. It does throw for transport failures (`RequestFailedException`) and caller cancellation; the receiver is the low-level API and its caller owns the loop. The processor is where "never throws" lives.
 
-Dead-lettering copies the raw body (plus `MessageId`, `DequeueCount`, `InsertedOn` and `reason` as a small JSON envelope) to `<queue>-poison`, creating it if needed, then deletes the original. This matches what Azure Functions does so existing tooling and expectations carry over.
+Dead-lettering sends the **raw body unchanged** to `<queue>-poison` (creating it if needed), then deletes the original. The reason, message id, dequeue count and insertion time go to the log, not into the message: a poison message can then be moved straight back to the main queue to replay it, and the behaviour matches Azure Functions. Because copy-then-delete is two calls, a lease that expires between them can produce a duplicate in the poison queue; that is the at-least-once trade and is documented. There are no Azure Storage Queue message properties to carry a reason in.
 
 ## The processor
 
@@ -142,9 +172,9 @@ public interface IQueueMessageHandler<TMessage>
 
 public sealed class QueueProcessorOptions
 {
-    public int MaxMessagesPerReceive { get; set; } = 16;          // service max is 32
     public int MaxConcurrentMessages { get; set; } = 1;
-    public TimeSpan VisibilityTimeout { get; set; } = TimeSpan.FromMinutes(1);
+    public int? MaxMessagesPerReceive { get; set; }               // default = MaxConcurrentMessages, so no lease is held on a message nothing is working on; 1..32
+    public TimeSpan VisibilityTimeout { get; set; } = TimeSpan.FromMinutes(1); // the processor's own; QueueClientSettings.VisibilityTimeout applies to direct ReceiveAsync calls only
     public bool RenewVisibility { get; set; } = true;             // renew at half the timeout while the handler runs
     public bool AutoComplete { get; set; } = true;                // complete on return, abandon on throw
     public int MaxDequeueCount { get; set; } = 5;                 // then dead-letter
@@ -160,11 +190,12 @@ public sealed class QueueProcessorOptions
 
 Behaviour, per processor registration (one hosted service each):
 
-- **Scope per message.** `THandler` is resolved from a new `IServiceScope` for every message, so scoped services (`DbContext`, request-scoped loggers) work the way they do in a controller.
+- **Scope per message.** `THandler` is resolved from a new `IServiceScope` for every message, so scoped services (`DbContext`, request-scoped loggers) work the way they do in a controller. `AddProcessor` registers and resolves the concrete `THandler` type, not `IQueueMessageHandler<TMessage>`, so two queues carrying the same `TMessage` can have different handlers.
+- **Handler contract.** With `DeadLetterOnDeserializationFailure = false` the handler can receive a message whose `Body` is null and `Error` is set; otherwise `Body` is null only when the message was JSON `null`.
 - **Poison first.** Before the handler sees a message: if `DequeueCount > MaxDequeueCount`, or `Error` is set and `DeadLetterOnDeserializationFailure`, the message is dead-lettered and the handler is not called.
-- **Lease renewal.** While the handler runs, the lease is renewed at half `VisibilityTimeout`. A handler that takes ten minutes no longer causes duplicate processing.
-- **Completion.** With `AutoComplete`, a handler that returns completes the message; one that throws abandons it with `RetryDelay(DequeueCount)`. A handler may call `CompleteAsync` / `AbandonAsync` / `DeadLetterAsync` itself, and the processor then does nothing further for that message.
-- **Nothing escapes.** Transport errors on receive are logged and backed off (exponential to `ErrorBackoffMax`); handler exceptions are logged with message id and dequeue count; an exception from dead-lettering falls back to abandon. The host never stops because of this library.
+- **Lease renewal.** While the handler runs, the lease is renewed at half `VisibilityTimeout`. A handler that takes ten minutes no longer causes duplicate processing. The renewal timer is stopped before the message is settled, so a renew and a complete never race.
+- **Completion.** With `AutoComplete`, a handler that returns completes the message; one that throws abandons it with `RetryDelay(DequeueCount)`. A handler may settle the message itself (`IsSettled`), and the processor then does nothing further for it. Completing after a successful handler is **not** tied to the shutdown token (the 2.1 lesson: cancelling it only redelivers work that is already done).
+- **Nothing escapes.** Transport errors on receive are logged and backed off (exponential to `ErrorBackoffMax`); a missing queue is logged with "set CreateIfNotExists" and backed off the same way; handler exceptions are logged with message id and dequeue count; an exception from dead-lettering (for example, no permission to create the poison queue) falls back to abandon with the maximum retry delay and an error-level log, so nothing is lost silently. The host never stops because of this library.
 - **Empty queue.** Polling backs off exponentially from `EmptyQueueBackoffMin` to `EmptyQueueBackoffMax`, resetting on the first non-empty receive.
 - **Concurrency.** Up to `MaxConcurrentMessages` handlers in flight, each with its own scope and renewal timer.
 - **Lifecycle.** Implements `IHostedLifecycleService`: starts polling after the application has started (so a slow startup does not hold leases), and on shutdown stops receiving, cancels the handlers' token, and waits up to `ShutdownDrainTimeout` for in-flight messages. Messages not completed in time become visible again after their timeout.
@@ -192,6 +223,10 @@ Kept for the whole of 3.x, all `[Obsolete]` with the replacement named:
 - `QueueClientSettings.SerializerOptions` (forwarded to `UseJsonSerializer`).
 
 Removed in 3.0 (already obsolete or never documented): the synchronous `PeekMessages`, the three old `LoggerMessageExtensions` methods, `MetricExtensions.ProcessWithMetricsAsync`, `QueueClientSettings.SectionName`, `ApplicationException` as a thrown type.
+
+## Self-review (2026-10-15)
+
+Problems found reading the first draft adversarially, all folded in above: peek returned a type with operations that cannot work (now `PeekedQueueMessage<T>`); `QueueMessage<T>` could not be built by a test (public constructor + `IQueueMessageOperations`); renewal and completion could race on `PopReceipt` (serialized operations, `IsSettled`, timer stopped before settling); the processor held leases on messages it was not working on (`MaxMessagesPerReceive` defaults to `MaxConcurrentMessages`); two visibility-timeout settings with no precedence (stated); the dead-letter envelope broke replay (raw body unchanged); handler registration by interface collided across queues (concrete type); `ValidateOnStart` had nowhere to live without a breaking return type (parent builder); the public builder name clashed with an internal type (rename).
 
 ## Open decisions
 
