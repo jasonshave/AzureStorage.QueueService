@@ -13,11 +13,11 @@
 		<Description>A library used to read from an Azure Storage Queue. Use this package in combination with code samples for Azure Communication Services projects where Event Grid subscriptions from a storage queue are used.</Description>
 		<Copyright>Unifinity Software Corporation</Copyright>
 		<PackageTags>Azure, Azure Storage, Azure Storage Queue, Storage Queue, Queue Service, Jason Shave, Unifinity Software Corporation</PackageTags>
-		<PackageProjectUrl>https://github.com/jasonshave/JasonShave.AzureStorage.QueueService</PackageProjectUrl>
+		<PackageProjectUrl>https://github.com/jasonshave/AzureStorage.QueueService</PackageProjectUrl>
 		<PackageIcon>logo.png</PackageIcon>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<RepositoryType>git</RepositoryType>
-		<RepositoryUrl>https://github.com/jasonshave/JasonShave.AzureStorage.QueueService</RepositoryUrl>
+		<RepositoryUrl>https://github.com/jasonshave/AzureStorage.QueueService</RepositoryUrl>
 		<Authors>Unifinity Software Corporation</Authors>
 		<AssemblyVersion></AssemblyVersion>
 		<Version>$(VersionPrefix)</Version>

@@ -5,10 +5,12 @@
   <img src="./images/logo-light.svg" alt="Unifinity" width="75" />
 </picture>
 
-[![.NET](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/dotnet.yml/badge.svg)](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/dotnet.yml)
-[![Nuget](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/nuget.yml/badge.svg)](https://github.com/jasonshave/JasonShave.AzureStorage.QueueService/actions/workflows/nuget.yml)
+[![.NET](https://github.com/jasonshave/AzureStorage.QueueService/actions/workflows/dotnet.yml/badge.svg)](https://github.com/jasonshave/AzureStorage.QueueService/actions/workflows/dotnet.yml)
+[![Nuget](https://github.com/jasonshave/AzureStorage.QueueService/actions/workflows/nuget.yml/badge.svg)](https://github.com/jasonshave/AzureStorage.QueueService/actions/workflows/nuget.yml)
 
-This project abstracts away the complexities of using the Azure Storage account's queue feature targeting .NET 6 and higher.
+> **This is the documentation for 2.x**, the maintenance line for .NET 8, which keeps receiving fixes. On .NET 10, use 3.0 instead: a new API with a hosted message processor. See the [3.0 README](https://github.com/jasonshave/AzureStorage.QueueService#readme), including its [upgrade guide](https://github.com/jasonshave/AzureStorage.QueueService#upgrading-from-2x).
+
+This project abstracts away the complexities of using the Azure Storage account's queue feature targeting .NET 8.
 
 ## Pre-requisites
 
@@ -30,7 +32,7 @@ You will need to create an Azure Storage account in the Azure portal using a uni
 
 ## Configuration
 
-1. Add the Nuget package `JasonShave.AzureStorage.QueueService` to your .NET project
+1. Add the NuGet package [`AzureStorage.QueueService`](https://www.nuget.org/packages/AzureStorage.QueueService) to your .NET project
 2. Set your `ConnectionString` and `QueueName` properties in your [.NET User Secrets store](https://docs.microsoft.com/en-us/aspnet/core/security/app-secrets?view=aspnetcore-6.0&tabs=windows), `appsettings.json`, or anywhere your `IConfiguration` provider can look for the `QueueClientSettings`. For example:
 
     ```json
