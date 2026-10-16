@@ -1,4 +1,6 @@
-﻿namespace AzureStorage.QueueService;
+﻿using Azure.Core;
+
+namespace AzureStorage.QueueService;
 
 /// <summary>
 /// Records which client names were registered. The settings themselves live in the named-options system
@@ -11,6 +13,9 @@ internal sealed class QueueClientSettingsRegistry
     public bool HasDefaultClient { get; set; }
 
     public bool ValidateOnStart { get; set; }
+
+    /// <summary>The credential set by <c>UseTokenCredential</c>, for endpoint clients that have none of their own.</summary>
+    public TokenCredential? SharedTokenCredential { get; set; }
 
     public IReadOnlyCollection<string> ClientNames => _clientNames;
 

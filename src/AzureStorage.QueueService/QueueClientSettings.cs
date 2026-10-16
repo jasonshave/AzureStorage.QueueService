@@ -52,6 +52,19 @@ public class QueueClientSettings
     /// </summary>
     public QueueClientOptions? ClientOptions { get; set; }
 
+    /// <summary>
+    /// When <c>true</c>, sending wraps each message in a small JSON envelope that carries the current W3C trace context
+    /// (<c>traceparent</c> / <c>tracestate</c>), so a processor's span continues the sender's trace. Storage queue
+    /// messages have no properties, so the context has to travel in the body. A message sent with no current trace goes
+    /// out plain. This setting governs sending only: every client of this library from 3.1 on unwraps the envelope when
+    /// it receives, whatever its own setting. Off by default because it changes what is on the queue: turn it on only
+    /// when no consumer of the queue is on 3.0 or earlier, or is other code that does not follow the wire format in the README.
+    /// The envelope makes each message bigger: roughly 100 bytes plus the <c>tracestate</c>, and a custom serializer's
+    /// non-JSON output is carried Base64-encoded, about a third larger. The service rejects messages over 64 KiB, so a
+    /// message close to that limit can start failing to send when this is turned on; there is no fallback to plain.
+    /// </summary>
+    public bool PropagateTraceContext { get; set; }
+
     internal static readonly TimeSpan MinVisibility = TimeSpan.FromSeconds(1);
     internal static readonly TimeSpan MaxVisibility = TimeSpan.FromDays(7);
 
@@ -72,8 +85,21 @@ public class QueueClientSettings
     /// Where dead-lettered messages go: <see cref="PoisonQueueName"/>, or the queue name plus <c>-poison</c>. An empty
     /// name (a blank placeholder in configuration) counts as not set.
     /// </summary>
-    internal string? EffectivePoisonQueueName =>
-        HasPoisonQueueName ? PoisonQueueName : (EffectiveQueueName is { Length: > 0 } queue ? $"{queue}-poison" : null);
+    internal string? EffectivePoisonQueueName => PoisonQueueNameFor(EffectiveQueueName);
+
+    /// <summary>
+    /// The queue an in-memory client stands in for (see <c>AddInMemoryQueues</c>): the one the SDK client would target
+    /// (<see cref="EffectiveQueueName"/>) when there are connection details, or <see cref="QueueName"/> alone, since a
+    /// test host typically has none at all.
+    /// </summary>
+    internal string? InMemoryQueueName =>
+        UsesConnectionString || EndpointUri is not null ? EffectiveQueueName : (string.IsNullOrEmpty(QueueName) ? null : QueueName);
+
+    /// <summary>The poison queue an in-memory client dead-letters to, named by the same rule as the real one.</summary>
+    internal string? InMemoryPoisonQueueName => PoisonQueueNameFor(InMemoryQueueName);
+
+    private string? PoisonQueueNameFor(string? queueName) =>
+        HasPoisonQueueName ? PoisonQueueName : (queueName is { Length: > 0 } queue ? $"{queue}-poison" : null);
 
     private bool HasPoisonQueueName => !string.IsNullOrEmpty(PoisonQueueName);
 
@@ -89,6 +115,12 @@ public class QueueClientSettings
         if (EndpointUri is null || TokenCredential is null)
             return "is not configured. Set ConnectionString and QueueName, or set EndpointUri (including the queue name) and TokenCredential.";
 
+        return ValidateEndpointQueue();
+    }
+
+    /// <summary>Which queue an <see cref="EndpointUri"/> names, and that <see cref="QueueName"/> does not contradict it.</summary>
+    private string? ValidateEndpointQueue()
+    {
         if (EndpointQueueName is null)
             return "has an EndpointUri with no queue name in its path.";
 
@@ -105,14 +137,28 @@ public class QueueClientSettings
     /// Shared by startup validation and source-queue construction so the two can never disagree. Not applied to
     /// destination clients, which have no policy of their own.
     /// </summary>
-    internal string? Validate()
-    {
-        if (ValidateConnection() is { } connectionProblem) return connectionProblem;
+    internal string? Validate() => ValidateConnection() ?? ValidatePolicy(EffectiveQueueName);
 
+    /// <summary>
+    /// What an in-memory client needs: no credential or connection string, but the same rules for which queue it is
+    /// and the same processing policy, so an endpoint or poison queue name that would fail in production fails the
+    /// test too. Returns the problem, or null.
+    /// </summary>
+    internal string? ValidateInMemory()
+    {
+        if (!UsesConnectionString && EndpointUri is not null && ValidateEndpointQueue() is { } problem) return problem;
+
+        return InMemoryQueueName is { } queueName
+            ? ValidatePolicy(queueName)
+            : "has no QueueName. In-memory queues need no connection details, but still need a queue name to name the queue and its poison queue.";
+    }
+
+    private string? ValidatePolicy(string? queueName)
+    {
         if (VisibilityTimeout is { } visibility && (visibility < MinVisibility || visibility > MaxVisibility))
             return $"has a VisibilityTimeout of {visibility}; the service accepts 1 second to 7 days.";
 
-        var poison = EffectivePoisonQueueName;
+        var poison = PoisonQueueNameFor(queueName);
         if (poison is not null && QueueNameRules.Check(poison) is { } problem)
         {
             return !HasPoisonQueueName
@@ -120,7 +166,7 @@ public class QueueClientSettings
                 : $"has an invalid PoisonQueueName: {problem}";
         }
 
-        if (poison is not null && string.Equals(poison, EffectiveQueueName, StringComparison.Ordinal))
+        if (poison is not null && string.Equals(poison, queueName, StringComparison.Ordinal))
             return $"has PoisonQueueName equal to its own queue name ('{poison}'). Dead-lettered messages would go straight back onto the queue with a fresh dequeue count; use a different poison queue.";
 
         return null;

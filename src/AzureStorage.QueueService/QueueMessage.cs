@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace AzureStorage.QueueService;
 
 /// <summary>
@@ -31,6 +33,7 @@ public sealed class QueueMessage<T>
 {
     private readonly IQueueMessageOperations _operations;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly BinaryData? _wireBody;
 
     /// <summary>
     /// Public so a test that stubs <see cref="IQueueReceiver"/> can build messages; the library passes its real operations.
@@ -67,7 +70,30 @@ public sealed class QueueMessage<T>
 
     public DateTimeOffset? NextVisibleOn { get; private set; }
 
+    /// <summary>
+    /// The serialized message, before deserialization. When the sender wrapped it in a trace-context envelope
+    /// (<see cref="QueueClientSettings.PropagateTraceContext"/> on the sending client), this is the message inside the
+    /// envelope, so it is the same whichever way the message was sent.
+    /// </summary>
     public BinaryData RawBody { get; }
+
+    /// <summary>
+    /// The body exactly as it arrived on the queue: the envelope when there was one, otherwise <see cref="RawBody"/>.
+    /// Dead-lettering copies this, so a message moved back from the poison queue replays with its trace context.
+    /// </summary>
+    internal BinaryData WireBody
+    {
+        get => _wireBody ?? RawBody;
+        init => _wireBody = value;
+    }
+
+    /// <summary>The sender's trace context, when it was carried in an envelope and parsed.</summary>
+    internal ActivityContext? CreationContext { get; init; }
+
+    /// <summary>
+    /// What a processor's read step took from the body for a wrapper handler: the CloudEvent adapter's typed data.
+    /// </summary>
+    internal object? HandlerData { get; set; }
 
     /// <summary>Null when deserialization failed (see <see cref="Error"/>) or when the body was JSON <c>null</c>.</summary>
     public T? Body { get; private set; }
@@ -144,14 +170,14 @@ public sealed class QueueMessage<T>
         }
     }
 
-    /// <summary>Copies the raw body to the poison queue and deletes the message from this one.</summary>
+    /// <summary>Copies the message to the poison queue exactly as it arrived, and deletes it from this one.</summary>
     public async ValueTask DeadLetterAsync(string? reason = null, CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken);
         try
         {
             ThrowIfSettled();
-            await _operations.DeadLetterAsync(MessageId, PopReceipt, DequeueCount, RawBody, reason, cancellationToken);
+            await _operations.DeadLetterAsync(MessageId, PopReceipt, DequeueCount, WireBody, reason, cancellationToken);
             Settlement = MessageSettlement.DeadLettered;
         }
         finally

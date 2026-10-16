@@ -25,8 +25,19 @@ public class StorageQueueTests
         return mock;
     }
 
-    private static StorageQueue Create(Mock<QueueClient> client, Func<QueueClient>? poisonQueue = null, TimeSpan? visibilityTimeout = null, bool createIfNotExists = false, QueueServiceTelemetrySettings? telemetry = null) =>
-        new(client.Object, new JsonQueueMessageSerializer(), LoggerFactory, telemetry ?? new QueueServiceTelemetrySettings(), visibilityTimeout, createIfNotExists, poisonQueue);
+    private static StorageQueue Create(Mock<QueueClient> client, Func<QueueClient>? poisonQueue = null, TimeSpan? visibilityTimeout = null, bool createIfNotExists = false, QueueServiceTelemetrySettings? telemetry = null, bool propagateTraceContext = false) =>
+        new(client.Object, new JsonQueueMessageSerializer(), LoggerFactory, telemetry ?? new QueueServiceTelemetrySettings(), QueueServiceMetrics.Fallback, visibilityTimeout, createIfNotExists, poisonQueue, propagateTraceContext);
+
+    /// <summary>Sends succeed with message id <c>sent-1</c>; returns the bodies as they went to the service.</summary>
+    private static List<BinaryData> CaptureSends(Mock<QueueClient> client)
+    {
+        var sent = new List<BinaryData>();
+        var receipt = QueuesModelFactory.SendReceipt("sent-1", DateTimeOffset.Now, DateTimeOffset.Now, "r", DateTimeOffset.Now);
+        client.Setup(x => x.SendMessageAsync(It.IsAny<BinaryData>(), It.IsAny<TimeSpan?>(), It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
+            .Callback((BinaryData body, TimeSpan? _, TimeSpan? _, CancellationToken _) => sent.Add(body))
+            .ReturnsAsync(Response.FromValue(receipt, Mock.Of<Response>()));
+        return sent;
+    }
 
     private static void SetupUpdate(Mock<QueueClient> client, string expectedReceipt, TimeSpan expectedTimeout, string newReceipt) =>
         client.Setup(x => x.UpdateMessageAsync(It.IsAny<string>(), expectedReceipt, (string?)null, expectedTimeout, It.IsAny<CancellationToken>()))
@@ -133,24 +144,84 @@ public class StorageQueueTests
         client.Verify(x => x.ReceiveMessagesAsync(1, TimeSpan.FromMinutes(5), It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    [Fact(DisplayName = "F8: the receive span actually carries its tags")]
-    public async Task Receive_Span_Carries_Queue_Name_Tag()
+    [Fact(DisplayName = "F8: send and receive spans carry their tags, the original ones and the messaging semantic-convention attributes")]
+    public async Task Send_And_Receive_Spans_Carry_Their_Tags()
     {
-        var started = new List<Activity>();
-        using var listener = new ActivityListener
+        using var spans = new SpanRecorder();
+        var client = ClientReturning(("1", ValidJson));
+        client.Setup(x => x.Uri).Returns(new Uri("https://account.queue.core.windows.net/orders"));
+        CaptureSends(client);
+        var queue = Create(client, telemetry: new QueueServiceTelemetrySettings { CreateNewActivityOnMessageSend = true, CreateNewActivityOnMessageRetrieval = true });
+
+        using var test = new Activity("test").Start();
+        await queue.SendAsync(new TestObject());
+        await queue.ReceiveAsync<TestObject>(maxMessages: 3);
+
+        var send = await spans.WaitForAsync(QueueServiceDiagnostics.Names.SendingMessage, test.TraceId);
+        send.Kind.Should().Be(ActivityKind.Producer);
+        send.GetTagItem("queue.name").Should().Be("orders");
+        send.GetTagItem("messaging.system").Should().Be("azure.storage.queue");
+        send.GetTagItem("messaging.destination.name").Should().Be("orders");
+        send.GetTagItem("messaging.operation.type").Should().Be("send");
+        send.GetTagItem("messaging.operation.name").Should().Be("send");
+        send.GetTagItem("messaging.message.id").Should().Be("sent-1");
+        send.GetTagItem("server.address").Should().Be("account.queue.core.windows.net");
+        send.GetTagItem("server.port").Should().Be(443);
+
+        var read = await spans.WaitForAsync(QueueServiceDiagnostics.Names.ReadingMessages, test.TraceId);
+        read.Kind.Should().Be(ActivityKind.Client);
+        read.GetTagItem("queue.name").Should().Be("orders");
+        read.GetTagItem("queue.message_count").Should().Be(3);
+        read.GetTagItem("messaging.operation.type").Should().Be("receive");
+        read.GetTagItem("messaging.destination.name").Should().Be("orders");
+        read.GetTagItem("messaging.batch.message_count").Should().Be(1, "the batch form of receive reports how many arrived");
+    }
+
+    [Fact(DisplayName = "A receiver unwraps an enveloped message before deserialization whatever its own setting, and a plain one still reads")]
+    public async Task Propagation_Unwraps_Envelopes_And_Still_Reads_Plain_Messages()
+    {
+        var sendClient = new Mock<QueueClient>();
+        var sent = CaptureSends(sendClient);
+        ActivityContext sender;
+        using (var caller = new Activity("caller").Start())
         {
-            ShouldListenTo = source => source.Name == QueueServiceDiagnostics.ServiceName,
-            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
-            ActivityStarted = started.Add,
-        };
-        ActivitySource.AddActivityListener(listener);
+            await Create(sendClient, propagateTraceContext: true).SendAsync(new TestObject { Property1 = "wrapped" });
+            sender = caller.Context;
+        }
 
-        await Create(ClientReturning(("1", ValidJson)), telemetry: new QueueServiceTelemetrySettings { CreateNewActivityOnMessageRetrieval = true })
-            .ReceiveAsync<TestObject>(maxMessages: 3);
+        var wire = sent.Should().ContainSingle().Subject.ToString();
+        wire.Should().StartWith($"{{\"$azqs-envelope\":1,\"traceparent\":\"00-{sender.TraceId}-{sender.SpanId}-");
 
-        var read = started.Should().ContainSingle(a => a.OperationName == QueueServiceDiagnostics.Names.ReadingMessages).Subject;
-        read.GetTagItem(QueueServiceDiagnostics.Names.QueueName).Should().Be("orders");
-        read.GetTagItem(QueueServiceDiagnostics.Names.QueueMessageCount).Should().Be(3);
+        // The receiver's own setting is off: the setting governs sending only.
+        var messages = await Create(ClientReturning(("1", wire), ("2", ValidJson))).ReceiveAsync<TestObject>(maxMessages: 2);
+
+        var wrapped = messages.Single(m => m.MessageId == "1");
+        wrapped.Body!.Property1.Should().Be("wrapped");
+        wrapped.RawBody.ToString().Should().StartWith("{\"Property1\":\"wrapped\"", "RawBody is the message inside the envelope");
+        wrapped.CreationContext!.Value.TraceId.Should().Be(sender.TraceId);
+        wrapped.CreationContext!.Value.SpanId.Should().Be(sender.SpanId);
+
+        var plain = messages.Single(m => m.MessageId == "2");
+        plain.Body!.Property1.Should().Be("test");
+        plain.CreationContext.Should().BeNull();
+    }
+
+    [Fact(DisplayName = "Dead-lettering an enveloped message copies the whole envelope, so moving it back replays with its trace context")]
+    public async Task DeadLetter_Keeps_The_Envelope()
+    {
+        using var caller = new Activity("caller").Start();
+        var wire = TraceContextEnvelope.Wrap(BinaryData.FromString(ValidJson), caller)!.ToString();
+        var poison = new Mock<QueueClient>();
+        var poisoned = CaptureSends(poison);
+        var message = (await Create(ClientReturning(("1", wire)), () => poison.Object).ReceiveAsync<TestObject>())[0];
+
+        await message.DeadLetterAsync("gave up");
+
+        var copy = poisoned.Should().ContainSingle().Subject.ToString();
+        copy.Should().Be(wire);
+        var replayed = (await Create(ClientReturning(("1", copy))).ReceiveAsync<TestObject>())[0];
+        replayed.Body!.Property1.Should().Be("test");
+        replayed.CreationContext!.Value.TraceId.Should().Be(caller.TraceId);
     }
 
     [Fact(DisplayName = "Complete deletes with the current receipt, settles, and refuses a second operation")]

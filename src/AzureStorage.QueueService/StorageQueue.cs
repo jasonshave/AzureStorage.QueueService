@@ -14,12 +14,14 @@ namespace AzureStorage.QueueService;
 /// </summary>
 internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOwnedReceiver
 {
-    private const int ServiceMaxMessages = 32;
-
     private readonly QueueClient _client;
     private readonly IQueueMessageSerializer _serializer;
     private readonly ILogger<StorageQueue> _logger;
     private readonly QueueServiceTelemetrySettings _telemetry;
+    private readonly QueueServiceMetrics _metrics;
+    private readonly bool _propagateTraceContext;
+    private readonly string? _serverAddress;
+    private readonly int _serverPort;
     private readonly TimeSpan? _defaultVisibilityTimeout;
     private readonly bool _createIfNotExists;
     private readonly Func<QueueClient>? _poisonQueueFactory;
@@ -33,14 +35,20 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
         IQueueMessageSerializer serializer,
         ILoggerFactory loggerFactory,
         QueueServiceTelemetrySettings telemetry,
+        QueueServiceMetrics metrics,
         TimeSpan? defaultVisibilityTimeout,
         bool createIfNotExists,
-        Func<QueueClient>? poisonQueueFactory)
+        Func<QueueClient>? poisonQueueFactory,
+        bool propagateTraceContext)
     {
         _client = client;
         _serializer = serializer;
         _logger = loggerFactory.CreateLogger<StorageQueue>();
         _telemetry = telemetry;
+        _metrics = metrics;
+        _propagateTraceContext = propagateTraceContext;
+        _serverAddress = client.Uri?.Host;
+        _serverPort = client.Uri?.Port ?? 0;
         _defaultVisibilityTimeout = defaultVisibilityTimeout;
         _createIfNotExists = createIfNotExists;
         _poisonQueueFactory = poisonQueueFactory;
@@ -55,29 +63,31 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
     public async ValueTask<SendReceipt> SendAsync<T>(T message, SendOptions? options = null, CancellationToken cancellationToken = default)
     {
         using Activity? activity = _telemetry.CreateNewActivityOnMessageSend
-            ? QueueServiceDiagnostics.Activities.StartSendingMessageActivity(QueueTags())
+            ? QueueServiceDiagnostics.Activities.StartSendingMessageActivity(SpanTags(QueueServiceDiagnostics.Messaging.Send))
             : null;
 
         try
         {
             await EnsureQueueExistsAsync(cancellationToken);
 
-            BinaryData body = _serializer.Serialize(message);
-            var timeToLive = options?.TimeToLive;
-            // .NET's infinite sentinel is -1 ms; the service requires -1 whole second.
-            if (timeToLive == Timeout.InfiniteTimeSpan) timeToLive = TimeSpan.FromSeconds(-1);
+            // The send span when there is one, as the conventions expect of a producer; otherwise whatever the caller
+            // is doing (an HTTP request, say). With neither there is no trace to continue and the message goes out plain.
+            var body = StorageQueueCommon.Encode(_serializer, message, _propagateTraceContext, activity ?? Activity.Current, out var serializedSize);
+            var timeToLive = StorageQueueCommon.ServiceTimeToLive(options?.TimeToLive);
             SendReceipt receipt = await _client.SendMessageAsync(body, options?.VisibilityTimeout, timeToLive, cancellationToken);
 
-            var tags = QueueTags();
-            QueueServiceDiagnostics.Metrics.MessagesSent.Add(1, tags);
-            QueueServiceDiagnostics.Metrics.MessageSize.Record(body.ToMemory().Length, tags);
+            activity?.SetTag(QueueServiceDiagnostics.Messaging.MessageId, receipt.MessageId);
+            var tags = QueueServiceDiagnostics.MetricTags(QueueName);
+            _metrics.MessagesSent.Add(1, tags);
+            // The serializer's output, before any envelope, so the metric means what it meant in 3.0 whatever the setting.
+            _metrics.MessageSize.Record(serializedSize, tags);
 
             return receipt;
         }
         catch (Exception e)
         {
             _logger.LogSendFailed(QueueName, e);
-            activity?.AddException(e);
+            activity.RecordFailure(e);
             throw;
         }
     }
@@ -101,18 +111,13 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
         return messages.Count == 0 ? null : messages[0];
     }
 
-    public void Deserialize<T>(QueueMessage<T> message)
-    {
-        if (message.Error is not null) return; // a decoding failure; there is nothing to deserialize
-        var (body, error) = TryDeserialize<T>(message.RawBody);
-        message.SetBody(body, error);
-    }
+    public void Deserialize<T>(QueueMessage<T> message) => StorageQueueCommon.Deserialize(_serializer, message);
 
     private async ValueTask<List<QueueMessage<T>>> ReceiveUndeserializedAsync<T>(int maxMessages, TimeSpan? visibilityTimeout, CancellationToken cancellationToken)
     {
-        ValidateMaxMessages(maxMessages);
+        StorageQueueCommon.ValidateMaxMessages(maxMessages);
 
-        var tags = QueueTags();
+        var tags = SpanTags(QueueServiceDiagnostics.Messaging.Receive);
         tags.Add(QueueServiceDiagnostics.Names.QueueMessageCount, maxMessages);
         using Activity? activity = _telemetry.CreateNewActivityOnMessageRetrieval
             ? QueueServiceDiagnostics.Activities.StartReadingQueueActivity(tags)
@@ -136,18 +141,19 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
             }
 
             var count = received.Length + undecodable.Count;
+            // The conventions: a batch count for the batch form of the call, a message id for the single-message form.
+            if (maxMessages > 1) activity?.SetTag(QueueServiceDiagnostics.Messaging.BatchMessageCount, count);
             var messages = new List<QueueMessage<T>>(count);
             if (count == 0) return messages;
 
             _logger.LogMessagesReceived(QueueName, count);
             activity?.AddEvent(new ActivityEvent(QueueServiceDiagnostics.Events.QueueMessageReceived));
-            QueueServiceDiagnostics.Metrics.MessagesReceived.Add(count, QueueTags());
+            _metrics.MessagesReceived.Add(count, QueueServiceDiagnostics.MetricTags(QueueName));
 
             foreach (var m in received)
-            {
-                var raw = m.Body ?? BinaryData.FromString(m.MessageText ?? string.Empty);
-                messages.Add(new QueueMessage<T>(Info(m), raw, default, null, this));
-            }
+                messages.Add(StorageQueueCommon.Received<T>(Info(m), m.Body ?? BinaryData.FromString(m.MessageText ?? string.Empty), this));
+
+            if (maxMessages == 1 && messages.Count == 1) activity?.SetTag(QueueServiceDiagnostics.Messaging.MessageId, messages[0].MessageId);
 
             foreach (var failure in undecodable)
             {
@@ -167,14 +173,14 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
         catch (Exception e)
         {
             _logger.LogReceiveFailed(QueueName, e);
-            activity?.AddException(e);
+            activity.RecordFailure(e);
             throw;
         }
     }
 
     public async ValueTask<IReadOnlyList<PeekedQueueMessage<T>>> PeekAsync<T>(int maxMessages = 1, CancellationToken cancellationToken = default)
     {
-        ValidateMaxMessages(maxMessages);
+        StorageQueueCommon.ValidateMaxMessages(maxMessages);
         await EnsureQueueExistsAsync(cancellationToken);
 
         PeekedMessage[] peeked;
@@ -191,8 +197,8 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
         var messages = new List<PeekedQueueMessage<T>>(peeked.Length + undecodable.Count);
         foreach (var m in peeked)
         {
-            var raw = m.Body ?? BinaryData.FromString(m.MessageText ?? string.Empty);
-            var (body, error) = TryDeserialize<T>(raw);
+            var raw = StorageQueueCommon.Peeked(m.Body ?? BinaryData.FromString(m.MessageText ?? string.Empty));
+            var (body, error) = StorageQueueCommon.TryDeserialize<T>(_serializer, raw);
             messages.Add(new PeekedQueueMessage<T>(m.MessageId, m.DequeueCount, m.InsertedOn, m.ExpiresOn, raw, body, error));
         }
 
@@ -209,29 +215,6 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
 
     private static QueueMessageInfo Info(SdkQueueMessage m) =>
         new(m.MessageId, m.PopReceipt, m.DequeueCount, m.InsertedOn, m.ExpiresOn, m.NextVisibleOn);
-
-    private (T? Body, DeserializationException? Error) TryDeserialize<T>(BinaryData raw)
-    {
-        try
-        {
-            return (_serializer.Deserialize<T>(raw), null);
-        }
-        catch (DeserializationException e)
-        {
-            return (default, e);
-        }
-        catch (Exception e)
-        {
-            // A custom serializer that throws something else still must not take the receive down.
-            return (default, new DeserializationException($"Could not deserialize the queue message as {typeof(T).Name}: {e.Message}", e));
-        }
-    }
-
-    private static void ValidateMaxMessages(int maxMessages)
-    {
-        if (maxMessages is < 1 or > ServiceMaxMessages)
-            throw new ArgumentOutOfRangeException(nameof(maxMessages), maxMessages, $"The service allows 1 to {ServiceMaxMessages} messages per receive.");
-    }
 
     // ------------------------------------------------------------------------------------------------------------
     // Admin
@@ -279,9 +262,10 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
 
         var poison = _poisonQueue ??= _poisonQueueFactory();
 
-        // Raw body unchanged, so a poison message can be moved straight back to replay it. The reason goes to the log;
-        // storage queue messages have no properties to carry it in. Copy-then-delete is two calls: a lease that expires
-        // between them can leave a duplicate in the poison queue, which is the at-least-once trade.
+        // The body exactly as it arrived, trace-context envelope and all, so a poison message can be moved straight back
+        // to replay it. The reason goes to the log; storage queue messages have no properties to carry it in.
+        // Copy-then-delete is two calls: a lease that expires between them can leave a duplicate in the poison queue,
+        // which is the at-least-once trade.
         if (!_poisonQueueEnsured)
         {
             await poison.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
@@ -307,7 +291,15 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
     // Helpers
     // ------------------------------------------------------------------------------------------------------------
 
-    private TagList QueueTags() => new() { new(QueueServiceDiagnostics.Names.QueueName, QueueName) };
+    // Spans only, and they also say which account they talked to; metrics keep their 3.0 tags (MetricTags).
+    private TagList SpanTags(string operation)
+    {
+        var tags = QueueServiceDiagnostics.OperationTags(QueueName, operation);
+        if (_serverAddress is null) return tags;
+        tags.Add(QueueServiceDiagnostics.Messaging.ServerAddress, _serverAddress);
+        tags.Add(QueueServiceDiagnostics.Messaging.ServerPort, _serverPort);
+        return tags;
+    }
 
     // Queue creation happens on the first operation, once, asynchronously — never while resolving from DI.
     private async ValueTask EnsureQueueExistsAsync(CancellationToken cancellationToken)

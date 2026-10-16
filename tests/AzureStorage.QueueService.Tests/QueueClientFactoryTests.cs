@@ -1,8 +1,13 @@
-﻿using Azure.Identity;
+﻿using System.Diagnostics.Metrics;
+using Azure;
+using Azure.Identity;
 using Azure.Storage.Queues;
+using Azure.Storage.Queues.Models;
+using AzureStorage.QueueService.Telemetry;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Moq;
 
 namespace AzureStorage.QueueService.Tests;
@@ -261,5 +266,28 @@ public class QueueClientFactoryTests
 
         created.Should().ContainSingle();
         queues.Distinct().Should().ContainSingle();
+    }
+
+    [Fact(DisplayName = "Metrics go through the host's IMeterFactory, so a MetricCollector scoped to it sees them, with exactly their 3.0 tags")]
+    public async Task Metrics_Use_The_Hosts_Meter_Factory()
+    {
+        var client = new Mock<QueueClient>();
+        client.Setup(x => x.Name).Returns("orders");
+        client.Setup(x => x.SendMessageAsync(It.IsAny<BinaryData>(), It.IsAny<TimeSpan?>(), It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(QueuesModelFactory.SendReceipt("1", DateTimeOffset.Now, DateTimeOffset.Now, "r", DateTimeOffset.Now), Mock.Of<Response>()));
+        var sdkClients = new Mock<ISdkQueueClientFactory>();
+        sdkClients.Setup(x => x.CreateClient(It.IsAny<string>(), It.IsAny<QueueClientSettings>())).Returns(client.Object);
+        var services = new ServiceCollection().AddLogging().AddMetrics().AddSingleton(sdkClients.Object);
+        services.AddAzureStorageQueueClient(x => x.AddDefaultClient(y => { y.ConnectionString = ConnectionString; y.QueueName = "orders"; }));
+        await using var provider = services.BuildServiceProvider();
+
+        // Scoped to this container's factory: measurements from the library-owned fallback meter, or another test's host, are not seen.
+        using var sent = new MetricCollector<long>(provider.GetRequiredService<IMeterFactory>(), QueueServiceDiagnostics.ServiceName, "queue_messages_sent_total");
+        await provider.GetRequiredService<IQueueClientFactory>().GetQueue().SendAsync(new TestObject());
+
+        var measurement = sent.GetMeasurementSnapshot().Should().ContainSingle().Subject;
+        measurement.Value.Should().Be(1);
+        // Nothing added: a new label would start a new series and break continuity with stored history.
+        measurement.Tags.Should().Equal(new Dictionary<string, object?> { ["queue.name"] = "orders" });
     }
 }

@@ -69,8 +69,32 @@ builder.Services.AddAzureStorageQueueClient(queues =>
 | `VisibilityTimeout` | How long a message received with `ReceiveAsync` stays hidden when the call does not say. Default 30 seconds. A processor uses its own setting. |
 | `PoisonQueueName` | Where dead-lettered messages go. Default: the queue name plus `-poison`. Set it when the queue name is longer than 56 characters (Azure's limit is 63) or to share one poison queue. |
 | `ClientOptions` | `QueueClientOptions` for the Azure SDK client: retry policy, diagnostics, and `MessageEncoding`. |
+| `PropagateTraceContext` | Wrap each sent message in an envelope that carries the current trace, so the processor's span joins the sender's trace. Off by default; see [Telemetry](#telemetry) before turning it on. |
 
-Registering the same name twice adds to its configuration. `AddClient` and `AddDefaultClient` return a builder for that one client with `Configure(...)`, `UseSerializer(...)`, `UseJsonSerializer(...)` and `AddProcessor<,>(...)`; other packages can add their own extension methods to it.
+Registering the same name twice adds to its configuration. `AddClient` and `AddDefaultClient` return a builder for that one client with `Configure(...)`, `UseSerializer(...)`, `UseJsonSerializer(...)`, `AddProcessor<,>(...)` and `AddCloudEventProcessor<,>(...)`; other packages can add their own extension methods to it.
+
+### One identity for every client
+
+A credential can't go in `appsettings.json`, so set it once in code. `UseTokenCredential` gives it to every client that has an `EndpointUri` but no `TokenCredential` of its own, default and named, registered before or after the call; configuration then only needs the endpoint. A client's own `TokenCredential` still wins, clients with a `ConnectionString` are left alone, and calling it again replaces the credential. `DefaultAzureCredential` comes from the `Azure.Identity` package, which your app references; this library doesn't.
+
+```csharp
+builder.Services.AddAzureStorageQueueClient(queues =>
+{
+    queues.AddDefaultClient(builder.Configuration.GetSection("Queues:Notifications"));
+    queues.AddClient("orders", builder.Configuration.GetSection("Queues:Orders"));
+
+    queues.UseTokenCredential(new DefaultAzureCredential()).ValidateOnStart();
+});
+```
+
+```json
+{
+  "Queues": {
+    "Notifications": { "EndpointUri": "https://myaccount.queue.core.windows.net/notifications" },
+    "Orders": { "EndpointUri": "https://myaccount.queue.core.windows.net/orders", "CreateIfNotExists": true }
+  }
+}
+```
 
 ### Queues shared with Azure Functions or older SDKs
 
@@ -154,6 +178,44 @@ A processor is `MaxConcurrentMessages` workers; each receives one message, deliv
 | `ErrorBackoffMax` | 1 minute | Longest wait after a failed receive. |
 | `ShutdownDrainTimeout` | 30 s | How long shutdown waits for running handlers. |
 
+### Event Grid and other CloudEvents
+
+When the queue is fed by an Event Grid subscription that uses the CloudEvents schema (or anything else that writes [CloudEvents](https://cloudevents.io) as JSON), register an `ICloudEventHandler<TData>` instead. The handler gets the event's `data` already read as `TData`, and the event itself as `message.Body`, for its type, source, id, subject and time:
+
+```csharp
+public record OrderCreated(string OrderId, decimal Total);
+
+public class OrderCreatedHandler(OrdersDbContext db) : ICloudEventHandler<OrderCreated>
+{
+    public async ValueTask HandleAsync(QueueMessage<CloudEvent> message, OrderCreated? data, CancellationToken cancellationToken)
+    {
+        var cloudEvent = message.Body!; // cloudEvent.Type, .Source, .Id, .Subject, .Time
+        await db.Record(cloudEvent.Id, data!, cancellationToken);
+    }
+}
+
+builder.Services.AddAzureStorageQueueClient(queues =>
+    queues.AddClient("orders-events", settings =>
+          {
+              settings.ConnectionString = "...";
+              settings.QueueName = "orders-events";
+              // Event Grid Base64-encodes what it writes to a storage queue unless the subscription says otherwise
+              settings.ClientOptions = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 };
+          })
+          .UseJsonSerializer(new JsonSerializerOptions(JsonSerializerDefaults.Web)) // event data is usually camelCase
+          .AddCloudEventProcessor<OrderCreated, OrderCreatedHandler>());
+```
+
+It is the same processor underneath, with the same options and behaviour: return to complete, throw to retry, settle through `message` yourself if you want to. A few things are specific to events:
+
+- **Base64.** Event Grid's storage queue destination Base64-encodes each message by default. Set `MessageEncoding = QueueMessageEncoding.Base64` as above, or turn off Base64 encoding on the event subscription and leave the client as it is.
+- **The data is read with this client's serializer,** so its naming policy applies. An event with no data reaches the handler with `data` null.
+- **An event whose data cannot be read as `TData`** is treated like any other unreadable message: moved to the poison queue without calling the handler, with the event id and type in the reason. With `DeadLetterOnDeserializationFailure` off, the handler is called with `data` null and `message.Error` set.
+- **Binary data** (`data_base64`, or any data that is not JSON): use `BinaryData` as `TData` to get the bytes as they are. Any other `TData` is read with the client's serializer, so data that is not JSON is treated as unreadable.
+- **Event Grid's own schema** (`EventGridEvent`, Event Grid's default schema) is not supported; it needs the `Azure.Messaging.EventGrid` package. Choose the CloudEvents v1.0 schema when you create the subscription.
+
+`AddProcessor<CloudEvent, THandler>()` also works, if you would rather read `message.Body.Data` yourself.
+
 ## Receive in your own loop
 
 If you want the loop, inject `IQueueReceiver` and own it. You get every message's identity and settle it yourself; backoff, renewal, retries and shutdown are yours to handle, and a failed receive throws so your loop can react.
@@ -194,6 +256,36 @@ public class OrderPoller(IQueueReceiver receiver, ILogger<OrderPoller> logger) :
 
 Depend on `IQueueSender` and `IQueueReceiver` and fake them. A received message can be built in a test: `QueueMessage<T>` has a public constructor that takes a `QueueMessageInfo`, the body and an `IQueueMessageOperations` — stub the operations to assert that your code completed or abandoned the message.
 
+To test a handler end to end — send, processor, handler, then complete, retry or dead-letter — swap the real queues for in-memory ones. No storage account, emulator or connection string is needed, even with `ValidateOnStart()`; each client still needs a `QueueName`, or an `EndpointUri` that names the queue, checked by the same rules as in production. Messages go through each client's serializer and follow the service's rules: a received message is hidden for its visibility timeout and its dequeue count goes up, an abandoned one stays hidden for its retry delay, and settling with an outdated pop receipt throws a `RequestFailedException` (404). Time comes from the registered `TimeProvider`, so a `FakeTimeProvider` drives polling, retries and expiry without real waits. Clients naming the same queue share it, so to see what was dead-lettered, register a client for the poison queue and peek it:
+
+```csharp
+var time = new FakeTimeProvider();
+var builder = Host.CreateEmptyApplicationBuilder(new HostApplicationBuilderSettings());
+builder.Services.AddSingleton<TimeProvider>(time);
+builder.Services.AddSingleton(fulfilment); // a fake the handler calls, which the test can await
+builder.Services.AddAzureStorageQueueClient(queues =>
+{
+    queues.AddClient("orders", settings => settings.QueueName = "orders")
+          .AddProcessor<Order, OrderHandler>();
+    queues.AddClient("orders-poison", settings => settings.QueueName = "orders-poison");
+});
+builder.Services.AddInMemoryQueues(); // before or after the registration; with WebApplicationFactory, in ConfigureTestServices
+
+using var host = builder.Build();
+await host.Services.GetRequiredKeyedService<IQueueSender>("orders").SendAsync(new Order(42));
+await host.StartAsync();
+await fulfilment.Called;  // the handler ran
+await host.StopAsync();   // lets the delivery finish settling
+
+var orders = host.Services.GetRequiredKeyedService<IStorageQueue>("orders");
+var remaining = (await orders.GetPropertiesAsync()).ApproximateMessagesCount; // 0 once completed
+var poisoned = await host.Services.GetRequiredKeyedService<IQueueReceiver>("orders-poison").PeekAsync<Order>(32);
+```
+
+To drive retries, advance the clock while the processor waits on it: a failed message stays hidden for its retry delay (5 s, then 10 s, ...), and an idle worker polls again after `EmptyQueueBackoffMin`. An advance made before the processor has started waiting does not wake it, so step the clock in time with the polls rather than in one jump.
+
+The in-memory queues differ from the service in a few ways: every queue exists without being created, `ClientOptions` (including Base64 `MessageEncoding`) is ignored, the 64 KiB message size limit is not enforced, and sends and receives emit no spans or metrics of their own (the processor's still do). `PropagateTraceContext` works as it does against the service, carrying the caller's current span since there is no `Queue.Send` span.
+
 ## Telemetry
 
 Traces and metrics use OpenTelemetry's standard .NET APIs:
@@ -204,9 +296,25 @@ builder.Services.AddOpenTelemetry()
     .WithMetrics(m => m.AddAzureStorageQueueMetrics());
 ```
 
-The processor emits a `Queue.Process` span (kind: consumer) per message, tagged with the queue name, message id, dequeue count and outcome. `Queue.Read` and `Queue.Send` spans for individual receives and sends are off by default because they are noisy; turn them on with `ConfigureQueueServiceTelemetry`.
+The processor emits a `Queue.Process` span (kind: consumer) per message, tagged with the queue name, message id, dequeue count and outcome. `Queue.Read` (client) and `Queue.Send` (producer) spans for individual receives and sends are off by default because they are noisy; turn them on with `ConfigureQueueServiceTelemetry`. A span whose operation failed is marked with an error status and `error.type`.
 
-Metrics, all tagged with `queue.name`: `queue_messages_received_total`, `queue_messages_sent_total`, `queue_messages_processed_total`, `queue_messages_failed_total`, `queue_message_processing_duration_seconds` (also tagged with `queue.outcome`), `queue_message_size_bytes`.
+Metrics, all tagged with `queue.name`: `queue_messages_received_total`, `queue_messages_sent_total`, `queue_messages_processed_total`, `queue_messages_failed_total`, `queue_message_processing_duration_seconds` (also tagged with `queue.outcome`), `queue_message_size_bytes` (the serializer's output, before any trace-context envelope).
+
+**Standard attribute names.** Alongside the tags above, spans carry the [OpenTelemetry messaging attributes](https://opentelemetry.io/docs/specs/semconv/messaging/), so App Insights and Grafana's messaging views recognise them: `messaging.system` (`azure.storage.queue`; the conventions define no value for Storage queues), `messaging.destination.name` (the queue), and `messaging.operation.type` / `messaging.operation.name` (`send`, `receive` or `process`). Spans also carry `messaging.message.id` where there is one message, `messaging.batch.message_count` on a receive of more than one, and `server.address` / `server.port` on sends and receives. Span names are unchanged, and metrics keep exactly their names and tags from 3.0, so stored history stays continuous.
+
+**Metrics in tests.** When the container has an `IMeterFactory` (the generic host registers one; add it yourself with `services.AddMetrics()`), the library creates its meter through it, so a `MetricCollector<T>` scoped to that factory sees exactly that host's measurements. Without one, the library uses a meter of its own, as before.
+
+**One trace from sender to handler (opt-in).** Storage queue messages have no properties or headers, so a trace context can only travel inside the body. Set `PropagateTraceContext = true` on a client and each send wraps the serialized message in a small envelope carrying the W3C trace context: that of the `Queue.Send` span when it is on, otherwise the caller's current span. A message sent with no current span goes out plain. Every client from 3.1 on unwraps the envelope when it receives, whatever its own setting, so `Body` and `RawBody` are the message you sent; plain messages read as before. The processor's `Queue.Process` span links to the sender's context and, because the processor's loop has no span of its own to belong to, also uses it as its parent, so the handler's work appears in the sender's trace.
+
+```json
+{"$azqs-envelope":1,"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","tracestate":"...","body":{"orderId":42}}
+```
+
+`tracestate` appears only when there is one. `body` is the serializer's output as-is when it is JSON; a custom serializer's non-JSON output goes in `body64`, Base64-encoded, instead. The queue's `MessageEncoding` applies to the whole envelope. Dead-lettering copies the envelope unchanged, so a message moved back from the poison queue replays with its trace context.
+
+**The envelope makes every message bigger.** It adds roughly 100 bytes, plus the length of `tracestate` when there is one. A custom serializer's non-JSON output grows by about a third on top of that, because Base64 turns every 3 bytes into 4. The service rejects a message over 64 KiB, so messages already close to that limit can start failing to send once the setting is on; check your largest messages first. The library does not fall back to sending plain.
+
+The setting is off by default because it changes what is on the queue. Any receiver on 3.1 or later reads both forms, so mixed senders are fine. What needs care is a consumer on 3.0 or earlier, or other code reading the queue (an Azure Function, a script): it sees the envelope as the message and fails to deserialize it, or worse, deserializes it into an object with empty fields. Upgrade those, or teach them the format above, before turning the setting on for any sender.
 
 ## Upgrading from 2.x
 
