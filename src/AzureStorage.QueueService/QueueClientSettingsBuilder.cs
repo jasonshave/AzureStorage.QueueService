@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Configuration;
+﻿using Azure.Core;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -103,8 +104,41 @@ public class QueueClientSettingsBuilder
         return this;
     }
 
+    /// <summary>
+    /// Connects every client that has an <see cref="QueueClientSettings.EndpointUri"/> but no
+    /// <see cref="QueueClientSettings.TokenCredential"/> of its own with <paramref name="credential"/>, so configuration
+    /// only needs the endpoint, for example <c>UseTokenCredential(new DefaultAzureCredential())</c>. Applies to default
+    /// and named clients, registered before and after this call, including those bound from configuration. A client's
+    /// own credential wins, and clients that use a connection string are left alone. Calling this again replaces the
+    /// credential.
+    /// </summary>
+    public QueueClientSettingsBuilder UseTokenCredential(TokenCredential credential)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+
+        // The post-configurer reads the credential from the registry when settings are built, so a later call replaces
+        // it rather than queueing behind the first.
+        Registry.SharedTokenCredential = credential;
+        Services.TryAddEnumerable(ServiceDescriptor.Singleton<IPostConfigureOptions<QueueClientSettings>, SharedTokenCredentialPostConfigure>());
+
+        return this;
+    }
+
     private void AddStartupValidation(string clientName) =>
         Services.AddOptions<QueueClientSettings>(clientName).ValidateOnStart();
+
+    // Post-configure, not configure: it must see each client's finished settings (every Configure call, including
+    // ones made after UseTokenCredential) to know whether the client brought its own credential, and the options
+    // factory runs post-configuration before validation, so an endpoint-only client passes ValidateOnStart and the
+    // factory's first-use check alike.
+    private sealed class SharedTokenCredentialPostConfigure(QueueClientSettingsRegistry registry) : IPostConfigureOptions<QueueClientSettings>
+    {
+        public void PostConfigure(string? name, QueueClientSettings options)
+        {
+            if (options.UsesConnectionString || options.EndpointUri is null) return;
+            options.TokenCredential ??= registry.SharedTokenCredential;
+        }
+    }
 
     // The in-memory store is registered only by AddInMemoryQueues; its presence means there is no connection to check.
     private sealed class QueueClientSettingsValidator(InMemoryQueueStore? inMemory = null) : IValidateOptions<QueueClientSettings>

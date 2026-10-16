@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -174,5 +175,51 @@ public class QueueClientBuilderTests
 
         await host.StartAsync();
         await host.StopAsync();
+    }
+
+    [Fact]
+    public async Task UseTokenCredential_LetsEndpointOnlyClientsPassValidateOnStartAndResolve()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Queues:Orders:EndpointUri"] = "https://account.queue.core.windows.net/orders" })
+            .Build();
+        var credential = new Azure.Identity.DefaultAzureCredential();
+
+        // One client registered before the call and one after, so both directions are covered.
+        using var host = Host.CreateDefaultBuilder().ConfigureServices(services =>
+            services.AddAzureStorageQueueClient(x =>
+            {
+                x.AddClient("orders", configuration.GetSection("Queues:Orders"));
+                x.UseTokenCredential(credential).ValidateOnStart();
+                x.AddDefaultClient(y => y.EndpointUri = new Uri("https://account.queue.core.windows.net/notifications"));
+            })).Build();
+
+        await host.StartAsync();
+
+        var factory = host.Services.GetRequiredService<IQueueClientFactory>();
+        factory.GetQueue("orders").Should().NotBeNull();
+        factory.GetQueue().Should().NotBeNull();
+        host.Services.GetRequiredService<IOptionsMonitor<QueueClientSettings>>().Get("orders").TokenCredential.Should().BeSameAs(credential);
+
+        await host.StopAsync();
+    }
+
+    [Fact]
+    public void UseTokenCredential_LeavesAClientsOwnCredentialAndConnectionStringClientsAlone()
+    {
+        var own = new Azure.Identity.DefaultAzureCredential();
+        var shared = new Azure.Identity.DefaultAzureCredential();
+        var services = new ServiceCollection();
+        services.AddAzureStorageQueueClient(x =>
+        {
+            x.UseTokenCredential(shared);
+            x.AddClient("own", y => { y.EndpointUri = new Uri("https://account.queue.core.windows.net/own"); y.TokenCredential = own; });
+            x.AddClient("connection", y => { y.ConnectionString = "UseDevelopmentStorage=true"; y.QueueName = "connection"; });
+        });
+
+        var settings = services.BuildServiceProvider().GetRequiredService<IOptionsMonitor<QueueClientSettings>>();
+
+        settings.Get("own").TokenCredential.Should().BeSameAs(own);
+        settings.Get("connection").TokenCredential.Should().BeNull();
     }
 }

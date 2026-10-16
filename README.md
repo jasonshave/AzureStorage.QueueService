@@ -73,6 +73,29 @@ builder.Services.AddAzureStorageQueueClient(queues =>
 
 Registering the same name twice adds to its configuration. `AddClient` and `AddDefaultClient` return a builder for that one client with `Configure(...)`, `UseSerializer(...)`, `UseJsonSerializer(...)`, `AddProcessor<,>(...)` and `AddCloudEventProcessor<,>(...)`; other packages can add their own extension methods to it.
 
+### One identity for every client
+
+A credential can't go in `appsettings.json`, so set it once in code. `UseTokenCredential` gives it to every client that has an `EndpointUri` but no `TokenCredential` of its own, default and named, registered before or after the call; configuration then only needs the endpoint. A client's own `TokenCredential` still wins, clients with a `ConnectionString` are left alone, and calling it again replaces the credential. `DefaultAzureCredential` comes from the `Azure.Identity` package, which your app references; this library doesn't.
+
+```csharp
+builder.Services.AddAzureStorageQueueClient(queues =>
+{
+    queues.AddDefaultClient(builder.Configuration.GetSection("Queues:Notifications"));
+    queues.AddClient("orders", builder.Configuration.GetSection("Queues:Orders"));
+
+    queues.UseTokenCredential(new DefaultAzureCredential()).ValidateOnStart();
+});
+```
+
+```json
+{
+  "Queues": {
+    "Notifications": { "EndpointUri": "https://myaccount.queue.core.windows.net/notifications" },
+    "Orders": { "EndpointUri": "https://myaccount.queue.core.windows.net/orders", "CreateIfNotExists": true }
+  }
+}
+```
+
 ### Queues shared with Azure Functions or older SDKs
 
 Those write Base64-encoded messages. Tell the SDK, and everything else is unchanged. A message on such a queue that is *not* valid Base64 does not fail the receive: it comes back with `Error` set alongside the healthy messages, so it can be dead-lettered like any other bad message.
