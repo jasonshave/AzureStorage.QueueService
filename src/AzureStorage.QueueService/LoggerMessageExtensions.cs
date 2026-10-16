@@ -71,4 +71,7 @@ internal static partial class LoggerMessageExtensions
 
     [LoggerMessage(25, LogLevel.Critical, "Processor {Processor}: a worker failed unexpectedly and will restart in {Backoff}. This is a bug in the library; please report it.")]
     public static partial void LogProcessorWorkerFailed(this ILogger logger, string processor, TimeSpan backoff, Exception exception);
+
+    [LoggerMessage(45, LogLevel.Warning, "{Client}: could not make a private copy of its QueueClientOptions, so the Base64 decoding handler is added to the caller's options while the SDK client is built, then removed. A QueueClient the application builds from the same options object at that moment may pick it up. Logged once.")]
+    public static partial void LogClientOptionsCopyFailed(this ILogger logger, string client, Exception exception);
 }

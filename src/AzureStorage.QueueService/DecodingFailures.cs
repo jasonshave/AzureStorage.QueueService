@@ -11,7 +11,7 @@ namespace AzureStorage.QueueService;
 /// With <c>MessageEncoding = Base64</c> the SDK decodes before the library sees anything. Without a
 /// <see cref="QueueClientOptions.MessageDecodingFailed"/> handler, one undecodable message throws for the entire
 /// receive and every healthy message in the batch stays hidden until its lease lapses. The library's SDK client
-/// captures an internal handler at construction, without leaving it on caller-owned options. That handler runs
+/// captures an internal handler at construction, from a private copy of the caller's options. That handler runs
 /// inside the receive call, on the same async flow, which is why an
 /// <see cref="AsyncLocal{T}"/> is enough to hand it back to the caller.
 /// </remarks>
