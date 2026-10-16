@@ -1,6 +1,9 @@
+using System.Text.Json;
+using Azure.Messaging;
 using Azure.Storage.Queues.Models;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
@@ -77,12 +80,13 @@ public class QueueProcessorTests(ITestOutputHelper output)
     /// <summary>Each receive hands out the next scripted batch (one message, or empty once the script runs out).</summary>
     private sealed class FakeQueue : IStorageQueue
     {
-        private readonly Queue<Func<QueueMessage<TestObject>[]>> _batches = new();
+        // Batches of any message type; a receive casts to the type its processor asks for.
+        private readonly Queue<Func<object>> _batches = new();
         public List<(int Take, TimeSpan? Visibility)> Receives { get; } = new();
         public Signal Received { get; } = new();
         public string QueueName => "orders";
 
-        public FakeQueue Then(QueueMessage<TestObject> message) { lock (_batches) _batches.Enqueue(() => new[] { message }); return this; }
+        public FakeQueue Then<T>(QueueMessage<T> message) { lock (_batches) _batches.Enqueue(() => new[] { message }); return this; }
         public FakeQueue ThenThrow(Exception exception) { lock (_batches) _batches.Enqueue(() => throw exception); return this; }
 
         public Task WaitForReceivesAsync(int count) => Received.WaitUntilAsync(() => { lock (Receives) return Receives.Count >= count; });
@@ -90,12 +94,12 @@ public class QueueProcessorTests(ITestOutputHelper output)
         public ValueTask<IReadOnlyList<QueueMessage<T>>> ReceiveAsync<T>(int maxMessages = 1, TimeSpan? visibilityTimeout = null, CancellationToken cancellationToken = default)
         {
             lock (Receives) Receives.Add((maxMessages, visibilityTimeout));
-            Func<QueueMessage<TestObject>[]>? next;
+            Func<object>? next;
             lock (_batches) next = _batches.Count > 0 ? _batches.Dequeue() : null;
             try
             {
-                var batch = next is null ? Array.Empty<QueueMessage<TestObject>>() : next();
-                return new((IReadOnlyList<QueueMessage<T>>)(object)batch);
+                var batch = next is null ? Array.Empty<QueueMessage<T>>() : (QueueMessage<T>[])next();
+                return new(batch);
             }
             finally
             {
@@ -662,5 +666,124 @@ public class QueueProcessorTests(ITestOutputHelper output)
         await using var h = new Harness(output, o => o.MaxConcurrentMessages = 0);
 
         await h.Processor.Invoking(p => p.StartAsync(CancellationToken.None)).Should().ThrowAsync<InvalidOperationException>().WithMessage("*MaxConcurrentMessages*");
+    }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // CloudEvents
+    // ---------------------------------------------------------------------------------------------------------
+
+    private sealed record OrderCreated(string OrderId, decimal Total);
+
+    private sealed class CloudEventRecorder(List<(QueueMessage<CloudEvent> Message, OrderCreated? Data)> calls) : ICloudEventHandler<OrderCreated>
+    {
+        public ValueTask HandleAsync(QueueMessage<CloudEvent> message, OrderCreated? data, CancellationToken cancellationToken)
+        {
+            lock (calls) calls.Add((message, data));
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// A CloudEvent processor registered the way an application does, through <c>AddCloudEventProcessor</c>, so the
+    /// client's serializer and the processor options reach the adapter by the real wiring. Only the queue is faked.
+    /// </summary>
+    private sealed class CloudEventHarness : IAsyncDisposable
+    {
+        private readonly ServiceProvider _provider;
+        public FakeQueue Queue { get; } = new();
+        public Operations Ops { get; } = new();
+        public List<(QueueMessage<CloudEvent> Message, OrderCreated? Data)> Calls { get; } = new();
+        public IHostedLifecycleService Processor { get; }
+
+        public CloudEventHarness(ITestOutputHelper output, Action<QueueProcessorOptions>? configure = null)
+        {
+            var factory = new Mock<IQueueClientFactory>();
+            factory.Setup(x => x.GetQueue("events")).Returns(Queue);
+
+            var services = new ServiceCollection();
+            services.AddLogging(logging => logging.AddProvider(new XUnitLoggerProvider(output)));
+            services.AddSingleton(factory.Object); // the library's TryAdd keeps this one
+            services.AddSingleton<TimeProvider>(new ObservableTimeProvider()); // so an empty queue never waits on real time
+            services.AddSingleton(Calls);
+            services.AddAzureStorageQueueClient(x =>
+                x.AddClient("events", s => { s.ConnectionString = "UseDevelopmentStorage=true"; s.QueueName = "events"; })
+                 // Event Grid writes camelCase data, so this also proves the data is read with the client's serializer.
+                 .UseJsonSerializer(new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                 .AddCloudEventProcessor<OrderCreated, CloudEventRecorder>(configure));
+            _provider = services.BuildServiceProvider();
+            Processor = (IHostedLifecycleService)_provider.GetServices<IHostedService>().Single();
+        }
+
+        /// <summary>A received message as a queue would hand it to the processor: the envelope already deserialized.</summary>
+        public QueueMessage<CloudEvent> Message(string id, string json)
+        {
+            var raw = BinaryData.FromString(json);
+            return new(new QueueMessageInfo(id, "r0", 1, null, null, null), raw, JsonSerializer.Deserialize<CloudEvent>(raw), null, Ops);
+        }
+
+        public async Task StartAsync()
+        {
+            await Processor.StartAsync(CancellationToken.None);
+            await Processor.StartedAsync(CancellationToken.None);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Processor.StopAsync(CancellationToken.None).WaitAsync(SafetyNet);
+            await _provider.DisposeAsync();
+        }
+    }
+
+    private const string OrderData = """{"orderId":"o-1","total":12.5}""";
+
+    private const string OrderEvent = """
+        {"specversion":"1.0","type":"Contoso.Orders.Created","source":"/contoso/orders","id":"evt-1","datacontenttype":"application/json","data":{"orderId":"o-1","total":12.5}}
+        """;
+
+    [Fact(DisplayName = "A CloudEvent is delivered with its data typed by the client's serializer and its metadata, then completed")]
+    public async Task CloudEvent_Is_Delivered_With_Typed_Data_And_Completed()
+    {
+        await using var h = new CloudEventHarness(output);
+        h.Queue.Then(h.Message("1", OrderEvent));
+
+        await h.StartAsync();
+        await h.Ops.WaitForAsync("delete");
+
+        var (message, data) = h.Calls.Should().ContainSingle().Subject;
+        data.Should().Be(new OrderCreated("o-1", 12.5m));
+        message.Body!.Type.Should().Be("Contoso.Orders.Created");
+        message.Body.Source.Should().Be("/contoso/orders");
+        message.Body.Id.Should().Be("evt-1");
+        message.Settlement.Should().Be(MessageSettlement.Completed);
+    }
+
+    [Fact(DisplayName = "A CloudEvent whose data does not match the handler's type is dead-lettered without calling the handler")]
+    public async Task CloudEvent_With_Unreadable_Data_Is_Dead_Lettered()
+    {
+        await using var h = new CloudEventHarness(output);
+        h.Queue.Then(h.Message("1", OrderEvent.Replace(OrderData, "\"not an order\"")));
+
+        await h.StartAsync();
+        await h.Ops.WaitForAsync("deadletter");
+
+        h.Ops.Calls.Should().ContainSingle(c => c.Op == "deadletter").Which.Reason.Should().Contain("evt-1").And.Contain(nameof(OrderCreated));
+        h.Calls.Should().BeEmpty();
+        h.Ops.Count("delete").Should().Be(0);
+    }
+
+    [Fact(DisplayName = "With DeadLetterOnDeserializationFailure off, unreadable CloudEvent data reaches the handler as null with Error set")]
+    public async Task CloudEvent_With_Unreadable_Data_Reaches_Handler_When_Dead_Lettering_Is_Off()
+    {
+        await using var h = new CloudEventHarness(output, o => o.DeadLetterOnDeserializationFailure = false);
+        h.Queue.Then(h.Message("1", OrderEvent.Replace(OrderData, "[1, 2]")));
+
+        await h.StartAsync();
+        await h.Ops.WaitForAsync("delete");
+
+        var (message, data) = h.Calls.Should().ContainSingle().Subject;
+        data.Should().BeNull();
+        message.Body!.Id.Should().Be("evt-1");
+        message.Error.Should().NotBeNull();
+        h.Ops.Count("deadletter").Should().Be(0);
     }
 }

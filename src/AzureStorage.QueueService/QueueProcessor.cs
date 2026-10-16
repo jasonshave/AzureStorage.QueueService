@@ -35,6 +35,8 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
     private readonly ILogger _logger;
     private readonly TimeProvider _time;
     private readonly IHostApplicationLifetime? _lifetime;
+    private readonly Func<IServiceProvider, THandler>? _createHandler;
+    private readonly string _handlerName;
 
     private readonly CancellationTokenSource _stopReceiving = new();
     private readonly CancellationTokenSource _cancelHandlers = new();
@@ -60,17 +62,23 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         IOptionsFactory<QueueProcessorOptions> optionsFactory,
         ILoggerFactory loggerFactory,
         TimeProvider time,
-        IHostApplicationLifetime? lifetime = null)
+        IHostApplicationLifetime? lifetime = null,
+        Func<IServiceProvider, THandler>? createHandler = null,
+        string? handlerName = null)
     {
+        // A wrapper handler (the CloudEvent adapter) passes the application's handler name, so logs name the class
+        // the application wrote rather than the library's wrapper.
+        _handlerName = handlerName ?? typeof(THandler).Name;
         _clientName = clientName;
         _optionsName = optionsName;
         _factory = factory;
         _scopes = scopes;
         _optionsFactory = optionsFactory;
-        _logger = loggerFactory.CreateLogger($"AzureStorage.QueueService.QueueProcessor<{typeof(TMessage).Name}, {typeof(THandler).Name}>");
+        _logger = loggerFactory.CreateLogger($"AzureStorage.QueueService.QueueProcessor<{typeof(TMessage).Name}, {_handlerName}>");
         _time = time;
         _lifetime = lifetime;
-        _name = typeof(THandler).Name;
+        _createHandler = createHandler;
+        _name = _handlerName;
         _handlerToken = _cancelHandlers.Token;
         _renewalToken = _stopRenewals.Token;
     }
@@ -89,7 +97,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
 
         // Throws for a misconfigured client. That fails host startup, which is the right time to find out.
         _queue = _clientName == Options.DefaultName ? _factory.GetQueue() : _factory.GetQueue(_clientName);
-        _name = $"{typeof(THandler).Name} on queue '{_queue.QueueName}'";
+        _name = $"{_handlerName} on queue '{_queue.QueueName}'";
 
         // Poll only once the whole application has started. If any later startup step fails, this never fires.
         if (_lifetime is not null)
@@ -334,7 +342,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
             {
                 // Resolving the handler is inside the boundary: a constructor that throws is a failed delivery too.
                 await using var scope = _scopes.CreateAsyncScope();
-                var handler = scope.ServiceProvider.GetRequiredService<THandler>();
+                var handler = _createHandler is null ? scope.ServiceProvider.GetRequiredService<THandler>() : _createHandler(scope.ServiceProvider);
                 await handler.HandleAsync(message, _handlerToken);
             }
             catch (OperationCanceledException) when (_handlerToken.IsCancellationRequested && !message.IsSettled)

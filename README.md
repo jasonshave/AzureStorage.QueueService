@@ -70,7 +70,7 @@ builder.Services.AddAzureStorageQueueClient(queues =>
 | `PoisonQueueName` | Where dead-lettered messages go. Default: the queue name plus `-poison`. Set it when the queue name is longer than 56 characters (Azure's limit is 63) or to share one poison queue. |
 | `ClientOptions` | `QueueClientOptions` for the Azure SDK client: retry policy, diagnostics, and `MessageEncoding`. |
 
-Registering the same name twice adds to its configuration. `AddClient` and `AddDefaultClient` return a builder for that one client with `Configure(...)`, `UseSerializer(...)`, `UseJsonSerializer(...)` and `AddProcessor<,>(...)`; other packages can add their own extension methods to it.
+Registering the same name twice adds to its configuration. `AddClient` and `AddDefaultClient` return a builder for that one client with `Configure(...)`, `UseSerializer(...)`, `UseJsonSerializer(...)`, `AddProcessor<,>(...)` and `AddCloudEventProcessor<,>(...)`; other packages can add their own extension methods to it.
 
 ### Queues shared with Azure Functions or older SDKs
 
@@ -153,6 +153,44 @@ A processor is `MaxConcurrentMessages` workers; each receives one message, deliv
 | `EmptyQueueBackoffMin` / `Max` | 1 s / 30 s | Polling interval on an empty queue. |
 | `ErrorBackoffMax` | 1 minute | Longest wait after a failed receive. |
 | `ShutdownDrainTimeout` | 30 s | How long shutdown waits for running handlers. |
+
+### Event Grid and other CloudEvents
+
+When the queue is fed by an Event Grid subscription that uses the CloudEvents schema (or anything else that writes [CloudEvents](https://cloudevents.io) as JSON), register an `ICloudEventHandler<TData>` instead. The handler gets the event's `data` already read as `TData`, and the event itself as `message.Body`, for its type, source, id, subject and time:
+
+```csharp
+public record OrderCreated(string OrderId, decimal Total);
+
+public class OrderCreatedHandler(OrdersDbContext db) : ICloudEventHandler<OrderCreated>
+{
+    public async ValueTask HandleAsync(QueueMessage<CloudEvent> message, OrderCreated? data, CancellationToken cancellationToken)
+    {
+        var cloudEvent = message.Body!; // cloudEvent.Type, .Source, .Id, .Subject, .Time
+        await db.Record(cloudEvent.Id, data!, cancellationToken);
+    }
+}
+
+builder.Services.AddAzureStorageQueueClient(queues =>
+    queues.AddClient("orders-events", settings =>
+          {
+              settings.ConnectionString = "...";
+              settings.QueueName = "orders-events";
+              // Event Grid Base64-encodes what it writes to a storage queue unless the subscription says otherwise
+              settings.ClientOptions = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 };
+          })
+          .UseJsonSerializer(new JsonSerializerOptions(JsonSerializerDefaults.Web)) // event data is usually camelCase
+          .AddCloudEventProcessor<OrderCreated, OrderCreatedHandler>());
+```
+
+It is the same processor underneath, with the same options and behaviour: return to complete, throw to retry, settle through `message` yourself if you want to. A few things are specific to events:
+
+- **Base64.** Event Grid's storage queue destination Base64-encodes each message by default. Set `MessageEncoding = QueueMessageEncoding.Base64` as above, or turn off Base64 encoding on the event subscription and leave the client as it is.
+- **The data is read with this client's serializer,** so its naming policy applies. An event with no data reaches the handler with `data` null.
+- **An event whose data cannot be read as `TData`** is treated like any other unreadable message: moved to the poison queue without calling the handler, with the event id and type in the reason. With `DeadLetterOnDeserializationFailure` off, the handler is called with `data` null and `message.Error` set.
+- **Binary data** (`data_base64`, or any data that is not JSON): use `BinaryData` as `TData` to get the bytes as they are. Any other `TData` is read with the client's serializer, so data that is not JSON is treated as unreadable.
+- **Event Grid's own schema** (`EventGridEvent`, Event Grid's default schema) is not supported; it needs the `Azure.Messaging.EventGrid` package. Choose the CloudEvents v1.0 schema when you create the subscription.
+
+`AddProcessor<CloudEvent, THandler>()` also works, if you would rather read `message.Body.Data` yourself.
 
 ## Receive in your own loop
 
