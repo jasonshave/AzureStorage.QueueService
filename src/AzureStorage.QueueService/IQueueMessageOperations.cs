@@ -14,7 +14,8 @@ public interface IQueueMessageOperations
     ValueTask<VisibilityReceipt> UpdateVisibilityAsync(string messageId, string popReceipt, TimeSpan visibilityTimeout, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Copies the raw body to the poison queue, then deletes the original.
+    /// Copies the body to the poison queue, then deletes the original. <paramref name="rawBody"/> is the body exactly as
+    /// it arrived on the queue, including any trace-context envelope, so the copy can be moved back and replayed.
     /// </summary>
     ValueTask DeadLetterAsync(string messageId, string popReceipt, long dequeueCount, BinaryData rawBody, string? reason, CancellationToken cancellationToken);
 }

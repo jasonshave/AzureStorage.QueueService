@@ -33,6 +33,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
     private readonly IServiceScopeFactory _scopes;
     private readonly IOptionsFactory<QueueProcessorOptions> _optionsFactory;
     private readonly ILogger _logger;
+    private readonly QueueServiceMetrics _metrics;
     private readonly TimeProvider _time;
     private readonly IHostApplicationLifetime? _lifetime;
     private readonly Func<IServiceProvider, THandler>? _createHandler;
@@ -61,6 +62,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         IServiceScopeFactory scopes,
         IOptionsFactory<QueueProcessorOptions> optionsFactory,
         ILoggerFactory loggerFactory,
+        QueueServiceMetrics metrics,
         TimeProvider time,
         IHostApplicationLifetime? lifetime = null,
         Func<IServiceProvider, THandler>? createHandler = null,
@@ -75,6 +77,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         _scopes = scopes;
         _optionsFactory = optionsFactory;
         _logger = loggerFactory.CreateLogger($"AzureStorage.QueueService.QueueProcessor<{typeof(TMessage).Name}, {_handlerName}>");
+        _metrics = metrics;
         _time = time;
         _lifetime = lifetime;
         _createHandler = createHandler;
@@ -303,10 +306,11 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         var start = Stopwatch.GetTimestamp();
         var outcome = "abandoned";
 
-        var tags = QueueTags();
+        var tags = QueueServiceDiagnostics.OperationTags(QueueName, QueueServiceDiagnostics.Messaging.Process);
         tags.Add(QueueServiceDiagnostics.Names.MessageId, message.MessageId);
         tags.Add(QueueServiceDiagnostics.Names.DequeueCount, message.DequeueCount);
-        using Activity? activity = QueueServiceDiagnostics.Activities.StartProcessingMessageActivity(tags);
+        tags.Add(QueueServiceDiagnostics.Messaging.MessageId, message.MessageId);
+        using Activity? activity = QueueServiceDiagnostics.Activities.StartProcessingMessageActivity(tags, message.CreationContext);
 
         // Armed before anything else — including deserialization — so nothing that happens to this message
         // while it is ours can let the lease lapse.
@@ -356,14 +360,15 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
             {
                 await StopRenewalAsync(renewal);
                 _logger.LogHandlerFailed(QueueName, message.MessageId, message.DequeueCount, ex);
-                activity?.AddException(ex);
-                QueueServiceDiagnostics.Metrics.MessageFailures.Add(1, QueueTags());
+                activity.RecordFailure(ex);
+                _metrics.MessageFailures.Add(1, QueueTags());
                 if (!message.IsSettled) await AbandonSafelyAsync(message, RetryDelayFor(message.DequeueCount));
                 return;
             }
             catch (Exception ex)
             {
-                // The handler settled the message and then threw. The settlement stands; report it as what it was.
+                // The handler settled the message and then threw. The settlement stands; report it as what it was:
+                // an exception on a span that did not fail, so no error status.
                 _logger.LogHandlerFailedAfterSettling(QueueName, message.MessageId, message.Settlement, ex);
                 activity?.AddException(ex);
             }
@@ -392,8 +397,8 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
                     catch (Exception ex)
                     {
                         _logger.LogDeleteFailed(QueueName, message.MessageId, _options.VisibilityTimeout, ex);
-                        activity?.AddException(ex);
-                        QueueServiceDiagnostics.Metrics.MessageFailures.Add(1, QueueTags());
+                        activity.RecordFailure(ex);
+                        _metrics.MessageFailures.Add(1, QueueTags());
                         outcome = "complete_failed";
                         return;
                     }
@@ -405,15 +410,15 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
             }
 
             _logger.LogMessageProcessed(QueueName, message.MessageId);
-            QueueServiceDiagnostics.Metrics.MessagesProcessed.Add(1, QueueTags());
+            _metrics.MessagesProcessed.Add(1, QueueTags());
         }
         catch (Exception ex)
         {
             // Anything the inner boundaries did not cover: scope disposal, an option callback, a logging sink.
             // A delivery must never fault silently and leave its message in limbo.
             _logger.LogProcessorDeliveryFailed(_name, message.MessageId, ex);
-            activity?.AddException(ex);
-            QueueServiceDiagnostics.Metrics.MessageFailures.Add(1, QueueTags());
+            activity.RecordFailure(ex);
+            _metrics.MessageFailures.Add(1, QueueTags());
             if (!message.IsSettled) await AbandonSafelyAsync(message, QueueProcessorOptions.MaxRetryDelay);
             outcome = "abandoned";
         }
@@ -424,7 +429,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
             var finalTags = QueueTags();
             finalTags.Add(QueueServiceDiagnostics.Names.QueueProcessSuccess, outcome is "completed" or "left_to_handler");
             finalTags.Add(QueueServiceDiagnostics.Names.Outcome, outcome);
-            QueueServiceDiagnostics.Metrics.MessageProcessingDuration.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, finalTags);
+            _metrics.MessageProcessingDuration.Record(Stopwatch.GetElapsedTime(start).TotalSeconds, finalTags);
             activity?.SetTag(QueueServiceDiagnostics.Names.Outcome, outcome);
         }
     }
@@ -453,7 +458,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         try
         {
             await message.DeadLetterAsync(reason, CancellationToken.None);
-            QueueServiceDiagnostics.Metrics.MessageFailures.Add(1, QueueTags());
+            _metrics.MessageFailures.Add(1, QueueTags());
             return "dead_lettered";
         }
         catch (Exception ex)
@@ -477,5 +482,5 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         }
     }
 
-    private TagList QueueTags() => new() { new(QueueServiceDiagnostics.Names.QueueName, QueueName) };
+    private TagList QueueTags() => QueueServiceDiagnostics.MetricTags(QueueName);
 }

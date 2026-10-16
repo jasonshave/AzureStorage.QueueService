@@ -69,6 +69,7 @@ builder.Services.AddAzureStorageQueueClient(queues =>
 | `VisibilityTimeout` | How long a message received with `ReceiveAsync` stays hidden when the call does not say. Default 30 seconds. A processor uses its own setting. |
 | `PoisonQueueName` | Where dead-lettered messages go. Default: the queue name plus `-poison`. Set it when the queue name is longer than 56 characters (Azure's limit is 63) or to share one poison queue. |
 | `ClientOptions` | `QueueClientOptions` for the Azure SDK client: retry policy, diagnostics, and `MessageEncoding`. |
+| `PropagateTraceContext` | Wrap each sent message in an envelope that carries the current trace, so the processor's span joins the sender's trace. Off by default; see [Telemetry](#telemetry) before turning it on. |
 
 Registering the same name twice adds to its configuration. `AddClient` and `AddDefaultClient` return a builder for that one client with `Configure(...)`, `UseSerializer(...)`, `UseJsonSerializer(...)`, `AddProcessor<,>(...)` and `AddCloudEventProcessor<,>(...)`; other packages can add their own extension methods to it.
 
@@ -272,9 +273,23 @@ builder.Services.AddOpenTelemetry()
     .WithMetrics(m => m.AddAzureStorageQueueMetrics());
 ```
 
-The processor emits a `Queue.Process` span (kind: consumer) per message, tagged with the queue name, message id, dequeue count and outcome. `Queue.Read` and `Queue.Send` spans for individual receives and sends are off by default because they are noisy; turn them on with `ConfigureQueueServiceTelemetry`.
+The processor emits a `Queue.Process` span (kind: consumer) per message, tagged with the queue name, message id, dequeue count and outcome. `Queue.Read` (client) and `Queue.Send` (producer) spans for individual receives and sends are off by default because they are noisy; turn them on with `ConfigureQueueServiceTelemetry`. A span whose operation failed is marked with an error status and `error.type`.
 
 Metrics, all tagged with `queue.name`: `queue_messages_received_total`, `queue_messages_sent_total`, `queue_messages_processed_total`, `queue_messages_failed_total`, `queue_message_processing_duration_seconds` (also tagged with `queue.outcome`), `queue_message_size_bytes`.
+
+**Standard attribute names.** Alongside the tags above, spans carry the [OpenTelemetry messaging attributes](https://opentelemetry.io/docs/specs/semconv/messaging/), so App Insights and Grafana's messaging views recognise them: `messaging.system` (`azure.storage.queue`; the conventions define no value for Storage queues), `messaging.destination.name` (the queue), and `messaging.operation.type` / `messaging.operation.name` (`send`, `receive` or `process`). Spans also carry `messaging.message.id` where there is one message, `messaging.batch.message_count` on a receive of more than one, and `server.address` / `server.port` on sends and receives. Span names are unchanged, and metrics keep exactly their names and tags from 3.0, so stored history stays continuous.
+
+**Metrics in tests.** When the container has an `IMeterFactory` (the generic host registers one; add it yourself with `services.AddMetrics()`), the library creates its meter through it, so a `MetricCollector<T>` scoped to that factory sees exactly that host's measurements. Without one, the library uses a meter of its own, as before.
+
+**One trace from sender to handler (opt-in).** Storage queue messages have no properties or headers, so a trace context can only travel inside the body. Set `PropagateTraceContext = true` on a client and each send wraps the serialized message in a small envelope carrying the W3C trace context: that of the `Queue.Send` span when it is on, otherwise the caller's current span. A message sent with no current span goes out plain. Every client from 3.1 on unwraps the envelope when it receives, whatever its own setting, so `Body` and `RawBody` are the message you sent; plain messages read as before. The processor's `Queue.Process` span links to the sender's context and, because the processor's loop has no span of its own to belong to, also uses it as its parent, so the handler's work appears in the sender's trace.
+
+```json
+{"$azqs-envelope":1,"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","tracestate":"...","body":{"orderId":42}}
+```
+
+`tracestate` appears only when there is one. `body` is the serializer's output as-is when it is JSON; a custom serializer's non-JSON output goes in `body64`, Base64-encoded, instead. The queue's `MessageEncoding` applies to the whole envelope. Dead-lettering copies the envelope unchanged, so a message moved back from the poison queue replays with its trace context. The envelope adds roughly 100 bytes to each message.
+
+The setting is off by default because it changes what is on the queue. Any receiver on 3.1 or later reads both forms, so mixed senders are fine. What needs care is a consumer on 3.0 or earlier, or other code reading the queue (an Azure Function, a script): it sees the envelope as the message and fails to deserialize it, or worse, deserializes it into an object with empty fields. Upgrade those, or teach them the format above, before turning the setting on for any sender.
 
 ## Upgrading from 2.x
 

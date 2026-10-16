@@ -17,6 +17,7 @@ internal sealed class QueueClientFactory : IQueueClientFactory
     private readonly IQueueMessageSerializer _serializer;
     private readonly QueueServiceTelemetrySettings _telemetry;
     private readonly InMemoryQueueStore? _inMemory;
+    private readonly QueueServiceMetrics _metrics;
 
     /// <param name="inMemory">Registered only by <c>AddInMemoryQueues</c>; when present, every client is an in-memory queue.</param>
     public QueueClientFactory(
@@ -26,6 +27,7 @@ internal sealed class QueueClientFactory : IQueueClientFactory
         ILoggerFactory loggerFactory,
         IQueueMessageSerializer serializer,
         IOptions<QueueServiceTelemetrySettings> telemetrySettingsOptions,
+        QueueServiceMetrics metrics,
         InMemoryQueueStore? inMemory = null)
     {
         _registry = registry;
@@ -35,6 +37,7 @@ internal sealed class QueueClientFactory : IQueueClientFactory
         _serializer = serializer;
         _telemetry = telemetrySettingsOptions.Value;
         _inMemory = inMemory;
+        _metrics = metrics;
     }
 
     public IStorageQueue GetQueue(string clientName)
@@ -96,9 +99,11 @@ internal sealed class QueueClientFactory : IQueueClientFactory
             settings.Serializer ?? _serializer,
             _loggerFactory,
             _telemetry,
+            _metrics,
             settings.VisibilityTimeout,
             settings.CreateIfNotExists,
-            PoisonQueue);
+            PoisonQueue,
+            settings.PropagateTraceContext);
     }
 
     // The same account and credentials, pointed at another queue. A destination only: no poison policy of its own.

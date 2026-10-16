@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text;
 using Azure.Storage.Queues;
@@ -66,6 +67,50 @@ public class IntegrationTests : IClassFixture<TestWebApplicationFactory<Program>
 
             receipt.ExpirationTime.Year.Should().Be(9999);
             (await raw.PeekMessagesAsync(1)).Value.Should().ContainSingle().Which.ExpiresOn.Should().Be(receipt.ExpirationTime);
+        }
+        finally
+        {
+            await raw.DeleteIfExistsAsync();
+        }
+    }
+
+    [Theory(DisplayName = "With trace propagation on, a message round-trips through the trace-context envelope on plain and Base64 queues")]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TraceContext_Envelope_Round_Trips(bool base64)
+    {
+        var connectionString = _factory.Services.GetRequiredService<IConfiguration>()["Storage:ConnectionString"]!;
+        var queueName = "trace-envelope-" + Guid.NewGuid().ToString("N");
+        var raw = new Azure.Storage.Queues.QueueClient(connectionString, queueName); // no encoding: reads stored text as-is
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAzureStorageQueueClient(queues => queues.AddDefaultClient(settings =>
+        {
+            settings.ConnectionString = connectionString;
+            settings.QueueName = queueName;
+            settings.CreateIfNotExists = true;
+            settings.PropagateTraceContext = true;
+            if (base64) settings.ClientOptions = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 };
+        }));
+        using var provider = services.BuildServiceProvider();
+        var queue = provider.GetRequiredService<IQueueClientFactory>().GetQueue();
+
+        try
+        {
+            string traceId;
+            using (var caller = new Activity("caller").Start())
+            {
+                await queue.SendAsync(new Person { FirstName = "traced" });
+                traceId = caller.TraceId.ToHexString();
+            }
+
+            var stored = (await raw.PeekMessagesAsync(1)).Value.Should().ContainSingle().Subject.MessageText;
+            var wire = base64 ? Encoding.UTF8.GetString(Convert.FromBase64String(stored)) : stored;
+            wire.Should().StartWith("{\"$azqs-envelope\":1,\"traceparent\":\"00-" + traceId, "the SDK's encoding wraps the envelope, not the other way round");
+
+            var message = (await queue.ReceiveAsync<Person>()).Should().ContainSingle().Subject;
+            message.Body!.FirstName.Should().Be("traced");
+            message.RawBody.ToString().Should().NotContain("$azqs-envelope");
         }
         finally
         {

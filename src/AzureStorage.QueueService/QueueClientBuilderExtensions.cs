@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Azure.Messaging;
+using AzureStorage.QueueService.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -110,6 +111,7 @@ public static class QueueClientBuilderExtensions
             provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<IOptionsFactory<QueueProcessorOptions>>(),
             provider.GetRequiredService<ILoggerFactory>(),
+            provider.GetRequiredService<QueueServiceMetrics>(),
             provider.GetService<TimeProvider>() ?? TimeProvider.System,
             provider.GetService<IHostApplicationLifetime>(),
             createHandler,

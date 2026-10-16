@@ -52,6 +52,16 @@ public class QueueClientSettings
     /// </summary>
     public QueueClientOptions? ClientOptions { get; set; }
 
+    /// <summary>
+    /// When <c>true</c>, sending wraps each message in a small JSON envelope that carries the current W3C trace context
+    /// (<c>traceparent</c> / <c>tracestate</c>), so a processor's span continues the sender's trace. Storage queue
+    /// messages have no properties, so the context has to travel in the body. A message sent with no current trace goes
+    /// out plain. This setting governs sending only: every client of this library from 3.1 on unwraps the envelope when
+    /// it receives, whatever its own setting. Off by default because it changes what is on the queue: turn it on only
+    /// when no consumer of the queue is on 3.0 or earlier, or is other code that does not follow the wire format in the README.
+    /// </summary>
+    public bool PropagateTraceContext { get; set; }
+
     internal static readonly TimeSpan MinVisibility = TimeSpan.FromSeconds(1);
     internal static readonly TimeSpan MaxVisibility = TimeSpan.FromDays(7);
 

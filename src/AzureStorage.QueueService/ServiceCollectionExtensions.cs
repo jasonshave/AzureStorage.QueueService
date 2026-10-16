@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.Diagnostics.Metrics;
+using System.Text.Json;
 using AzureStorage.QueueService.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -24,6 +25,8 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton<IQueueClientFactory, QueueClientFactory>();
         services.TryAddSingleton<ISdkQueueClientFactory, SdkQueueClientFactory>();
+        // Through the host's meter factory when there is one, so the meter is scoped to and disposed with this container.
+        services.TryAddSingleton(static provider => QueueServiceMetrics.Create(provider.GetService<IMeterFactory>()));
 
         if (serializerOptions is not null)
             services.Replace(ServiceDescriptor.Singleton<IQueueMessageSerializer>(new JsonQueueMessageSerializer(serializerOptions)));

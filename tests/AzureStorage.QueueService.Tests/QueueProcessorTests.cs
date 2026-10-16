@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Azure.Messaging;
 using Azure.Storage.Queues.Models;
+using AzureStorage.QueueService.Telemetry;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -210,6 +212,7 @@ public class QueueProcessorTests(ITestOutputHelper output)
                 provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<IOptionsFactory<QueueProcessorOptions>>(),
                 provider.GetRequiredService<ILoggerFactory>(),
+                QueueServiceMetrics.Fallback,
                 Time);
         }
 
@@ -400,7 +403,7 @@ public class QueueProcessorTests(ITestOutputHelper output)
             .ReturnsAsync(Mock.Of<Azure.Response>());
 
         var loggerFactory = new ServiceCollection().AddLogging().BuildServiceProvider().GetRequiredService<ILoggerFactory>();
-        var queue = new StorageQueue(client.Object, new BlockingSerializer(block), loggerFactory, new Telemetry.QueueServiceTelemetrySettings(), null, false, null);
+        var queue = new StorageQueue(client.Object, new BlockingSerializer(block), loggerFactory, new QueueServiceTelemetrySettings(), QueueServiceMetrics.Fallback, null, false, null, propagateTraceContext: false);
         await using var h = new Harness(output, o => o.VisibilityTimeout = TimeSpan.FromMinutes(1), queue);
 
         await h.StartAsync();
@@ -413,6 +416,53 @@ public class QueueProcessorTests(ITestOutputHelper output)
         block.Set();
         await deleted.Task.WaitAsync(SafetyNet);
         client.Verify(x => x.DeleteMessageAsync("1", "r1", It.IsAny<CancellationToken>()), Times.Once, "completion uses the receipt from the renewal that ran during deserialization");
+    }
+
+    [Fact(DisplayName = "With trace propagation on, the processing span continues the sender's trace and carries the semantic-convention attributes")]
+    public async Task Processing_Span_Continues_The_Senders_Trace()
+    {
+        using var spans = new SpanRecorder();
+        var sent = new List<BinaryData>();
+        var client = new Mock<Azure.Storage.Queues.QueueClient>();
+        client.Setup(x => x.Name).Returns("orders");
+        client.Setup(x => x.SendMessageAsync(It.IsAny<BinaryData>(), It.IsAny<TimeSpan?>(), It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
+            .Callback((BinaryData body, TimeSpan? _, TimeSpan? _, CancellationToken _) => sent.Add(body))
+            .ReturnsAsync(Azure.Response.FromValue(QueuesModelFactory.SendReceipt("1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "r0", DateTimeOffset.UtcNow), Mock.Of<Azure.Response>()));
+        var delivered = 0;
+        client.Setup(x => x.ReceiveMessagesAsync(It.IsAny<int?>(), It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                var batch = Interlocked.Exchange(ref delivered, 1) == 0
+                    ? new[] { QueuesModelFactory.QueueMessage("1", "r0", sent.Single(), 1) }
+                    : Array.Empty<Azure.Storage.Queues.Models.QueueMessage>();
+                return Azure.Response.FromValue(batch, Mock.Of<Azure.Response>());
+            });
+        var loggerFactory = new ServiceCollection().AddLogging().BuildServiceProvider().GetRequiredService<ILoggerFactory>();
+        var telemetry = new QueueServiceTelemetrySettings { CreateNewActivityOnMessageSend = true };
+        var queue = new StorageQueue(client.Object, new JsonQueueMessageSerializer(), loggerFactory, telemetry, QueueServiceMetrics.Fallback, null, false, null, propagateTraceContext: true);
+
+        ActivityTraceId traceId;
+        using (var request = new Activity("incoming request").Start())
+        {
+            await queue.SendAsync(new TestObject { Property1 = "traced" });
+            traceId = request.TraceId;
+        }
+        var send = await spans.WaitForAsync(QueueServiceDiagnostics.Names.SendingMessage, traceId);
+
+        await using var h = new Harness(output, queue: queue);
+        await h.StartAsync();
+        var process = await spans.WaitForAsync(QueueServiceDiagnostics.Names.ProcessingMessage, traceId);
+
+        process.ParentSpanId.Should().Be(send.SpanId, "the processor's loop has no ambient span, so the sender's context is the parent");
+        process.Links.Should().ContainSingle().Which.Context.SpanId.Should().Be(send.SpanId);
+        process.Kind.Should().Be(ActivityKind.Consumer);
+        process.GetTagItem("queue.message_id").Should().Be("1");
+        process.GetTagItem("messaging.message.id").Should().Be("1");
+        process.GetTagItem("messaging.system").Should().Be("azure.storage.queue");
+        process.GetTagItem("messaging.destination.name").Should().Be("orders");
+        process.GetTagItem("messaging.operation.type").Should().Be("process");
+        process.GetTagItem("queue.outcome").Should().Be("completed");
+        h.State.Invocations.Should().ContainSingle().Which.MessageId.Should().Be("1");
     }
 
     private sealed class BlockingSerializer(ManualResetEventSlim block) : IQueueMessageSerializer
