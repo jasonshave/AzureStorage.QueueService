@@ -8,7 +8,9 @@
 [![.NET](https://github.com/jasonshave/AzureStorage.QueueService/actions/workflows/dotnet.yml/badge.svg)](https://github.com/jasonshave/AzureStorage.QueueService/actions/workflows/dotnet.yml)
 [![Nuget](https://github.com/jasonshave/AzureStorage.QueueService/actions/workflows/nuget.yml/badge.svg)](https://github.com/jasonshave/AzureStorage.QueueService/actions/workflows/nuget.yml)
 
-This project abstracts away the complexities of using the Azure Storage account's queue feature targeting .NET 6 and higher.
+> **This is the documentation for 2.x**, the maintenance line for .NET 8, which keeps receiving fixes. On .NET 10, use 3.0 instead: a new API with a hosted message processor. See the [3.0 README](https://github.com/jasonshave/AzureStorage.QueueService#readme), including its [upgrade guide](https://github.com/jasonshave/AzureStorage.QueueService#upgrading-from-2x).
+
+This project abstracts away the complexities of using the Azure Storage account's queue feature targeting .NET 8.
 
 ## Pre-requisites
 
