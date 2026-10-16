@@ -27,7 +27,7 @@ builder.Services.AddAzureStorageQueueClient(queues =>
 });
 ```
 
-The first form works out the Blob endpoint from the queue client's own settings: a connection string is used as is, `https://myaccount.queue.core.windows.net/...` becomes `https://myaccount.blob.core.windows.net/`, and the storage emulator works too. For a custom domain, use the second or third form. Every form creates the container the first time a large message is sent, and takes an optional `thresholdBytes` to send smaller bodies to Blob storage as well.
+The first form works out the Blob endpoint from the queue client's own settings: a connection string is used as is, `https://myaccount.queue.core.windows.net/...` becomes `https://myaccount.blob.core.windows.net/`, and the storage emulator works too. For a custom domain, use the second or third form. Every form creates the container the first time a large message is sent (pass `createContainerIfNotExists: false` if it already exists), and takes an optional `thresholdBytes` to send smaller bodies to Blob storage as well.
 
 Large messages travel in the library's envelope, which only 3.1 and later read: upgrade every consumer of the queue before turning this on.
 
@@ -37,7 +37,7 @@ Most blobs are deleted automatically, but some are not: a message that expires o
 
 ## Permissions
 
-The identity the client connects with needs **Storage Blob Data Contributor** on the container (or the storage account) to create the container and to write, read and delete blobs. A connection string with the account key needs nothing more. If the container is created ahead of time, create the store yourself with `new BlobLargeMessageStore(container, createContainerIfNotExists: false)` and attach it with `UseLargeMessageStore(store)`.
+The identity the client connects with needs **Storage Blob Data Contributor** on the container (or the storage account) to create the container and to write, read and delete blobs. A connection string with the account key needs nothing more. An identity that isn't allowed to create containers needs the container created ahead of time, and `createContainerIfNotExists: false` on the registration, for example `.UseBlobStorageForLargeMessages("order-bodies", createContainerIfNotExists: false)`.
 
 ## Security
 

@@ -1,3 +1,4 @@
+using Azure;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using FluentAssertions;
@@ -100,5 +101,19 @@ public class BlobLargeMessageEndToEndTests(AzuriteContainer azurite) : IClassFix
         var deadLettered = (await host.Services.GetRequiredKeyedService<IQueueReceiver>("refunds-poison").ReceiveAsync<Report>()).Should().ContainSingle().Subject;
         deadLettered.Error.Should().BeNull();
         deadLettered.Body.Should().Be(sent);
+    }
+
+    [Fact(DisplayName = "Blob storage: with createContainerIfNotExists: false a missing container is not created, and the send fails")]
+    public async Task Does_Not_Create_Container_When_Told_Not_To()
+    {
+        var missing = new BlobContainerClient(AzuriteContainer.ConnectionString, $"azqs-missing-{Guid.NewGuid():N}");
+        using var host = BuildHost(new FakeTimeProvider(), queues =>
+            queues.AddClient("audits", settings => { settings.ConnectionString = AzuriteContainer.ConnectionString; settings.QueueName = "audits"; })
+                  .UseBlobStorageForLargeMessages(missing.Name, createContainerIfNotExists: false));
+
+        var send = () => host.Services.GetRequiredKeyedService<IQueueSender>("audits").SendAsync(Large("r-3"));
+
+        (await send.Should().ThrowAsync<RequestFailedException>()).Which.Status.Should().Be(404);
+        (await missing.ExistsAsync()).Value.Should().BeFalse("an identity without permission to create containers must not try");
     }
 }

@@ -432,13 +432,13 @@ queues.AddClient("orders", builder.Configuration.GetSection("Queues:Orders"))
       .UseBlobStorageForLargeMessages();          // container "queue-large-messages" in the queue's own account
 ```
 
-With no arguments it uses the queue's own storage account and credentials: a connection string as is, or `https://myaccount.queue.core.windows.net/...` becomes `https://myaccount.blob.core.windows.net/`. You can also pass a container name, a `BlobContainerClient`, or `sp => ...` to build the container client from your services. The container is created the first time a large message is sent. Pass `thresholdBytes` to send smaller bodies to Blob storage as well. Any other store can plug in by implementing `ILargeMessageStore` and calling `UseLargeMessageStore`.
+With no arguments it uses the queue's own storage account and credentials: a connection string as is, or `https://myaccount.queue.core.windows.net/...` becomes `https://myaccount.blob.core.windows.net/`. You can also pass a container name, a `BlobContainerClient`, or `sp => ...` to build the container client from your services. The container is created the first time a large message is sent; pass `createContainerIfNotExists: false` if it already exists. Pass `thresholdBytes` to send smaller bodies to Blob storage as well. Any other store can plug in by implementing `ILargeMessageStore` and calling `UseLargeMessageStore`.
 
 Things to know before turning it on:
 
 - **Every client that reads the queue needs the same store.** One without it can't read those messages and dead-letters them. Large messages travel in the library's envelope, which only 3.1 and later read.
 - **Some blobs are left behind.** A message that expires on the queue or is cleared from it is never processed, so its blob stays; a send that fails after the upload deletes its blob only on a best-effort basis. Add a [lifecycle management rule](https://learn.microsoft.com/azure/storage/blobs/lifecycle-management-overview) that deletes blobs in the container older than the queue's message time to live plus a margin (for example 9 days for the default 7), longer if you replay dead-lettered messages later.
-- **Permissions:** the identity needs **Storage Blob Data Contributor** on the container or the account. One that can't create containers needs the container created beforehand and `UseLargeMessageStore(new BlobLargeMessageStore(container, createContainerIfNotExists: false))`.
+- **Permissions:** the identity needs **Storage Blob Data Contributor** on the container or the account. One that can't create containers needs the container created beforehand and `createContainerIfNotExists: false`, for example `.UseBlobStorageForLargeMessages("order-bodies", createContainerIfNotExists: false)`.
 - **Messages are untrusted input.** The store only reads and deletes blobs in its own container; a message pointing anywhere else is dead-lettered without a request being made. A SAS token on the container client is never written to the queue.
 
 ## Testing your code
