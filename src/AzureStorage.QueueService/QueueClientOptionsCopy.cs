@@ -11,10 +11,10 @@ namespace AzureStorage.QueueService;
 /// to options nobody else builds clients from.
 /// </summary>
 /// <remarks>
-/// The public surface can't express a faithful copy: policies added with <see cref="ClientOptions.AddPolicy"/>, whether a
-/// transport was set, and the caller's own <see cref="QueueClientOptions.MessageDecodingFailed"/> handlers have no public
-/// getter. Those three are read by reflection, here and nowhere else. If an Azure SDK update renames them,
-/// <see cref="Copy"/> throws rather than return a copy that silently drops caller configuration.
+/// The public surface can't express a faithful copy: policies added with <see cref="ClientOptions.AddPolicy"/> and the
+/// caller's own <see cref="QueueClientOptions.MessageDecodingFailed"/> handlers have no public getter. Those two are read by
+/// reflection, here and nowhere else. If an Azure SDK update renames them, or the options can't be copied faithfully for
+/// another reason, <see cref="Copy"/> throws rather than return a copy that silently drops caller configuration.
 /// </remarks>
 internal static class QueueClientOptionsCopy
 {
@@ -27,14 +27,6 @@ internal static class QueueClientOptionsCopy
             ? policies
             : null;
 
-    // ClientOptions.IsCustomTransportSet: true once Transport is assigned. The pipeline won't replace a transport the
-    // caller set but may replace the default one, so the copy sets Transport only when the caller did.
-    private static readonly PropertyInfo? IsCustomTransportSet =
-        typeof(ClientOptions).GetProperty("IsCustomTransportSet", NonPublicInstance) is { } transportSet &&
-        transportSet.PropertyType == typeof(bool)
-            ? transportSet
-            : null;
-
     // QueueClientOptions.GetMessageDecodingFailedHandlers(): the caller's own handlers, which the library's client keeps
     // raising, as it did when it was built from the caller's options.
     private static readonly MethodInfo? DecodingFailedHandlers =
@@ -44,13 +36,20 @@ internal static class QueueClientOptionsCopy
             : null;
 
     /// <summary>Whether the installed Azure SDK still has every member the copy reads by reflection.</summary>
-    internal static bool IsSupported => Policies is not null && IsCustomTransportSet is not null && DecodingFailedHandlers is not null;
+    internal static bool IsSupported => Policies is not null && DecodingFailedHandlers is not null;
 
-    /// <exception cref="NotSupportedException">The installed Azure SDK no longer has a member the copy needs.</exception>
+    /// <exception cref="NotSupportedException">
+    /// The installed Azure SDK no longer has a member the copy needs, or <paramref name="source"/> is a subclass.
+    /// </exception>
     public static QueueClientOptions Copy(QueueClientOptions source)
     {
         if (!IsSupported)
             throw new NotSupportedException("The installed Azure.Core or Azure.Storage.Queues no longer exposes the members needed to copy QueueClientOptions faithfully.");
+
+        // A subclass can change settings the copy can't see (such as the protected application id length limit), and the
+        // SDK names the options type's assembly in its User-Agent and telemetry, so a base-type copy wouldn't be faithful.
+        if (source.GetType() != typeof(QueueClientOptions) && source.GetType() != typeof(SpecializedQueueClientOptions))
+            throw new NotSupportedException($"{source.GetType()} derives from QueueClientOptions, so it can't be copied faithfully.");
 
         // The service version is a constructor argument; client-side encryption is public only on the specialized type.
         var copy = source is SpecializedQueueClientOptions specialized
@@ -62,7 +61,9 @@ internal static class QueueClientOptionsCopy
         copy.EnableTenantDiscovery = source.EnableTenantDiscovery;
         copy.GeoRedundantSecondaryUri = source.GeoRedundantSecondaryUri;
         copy.RetryPolicy = source.RetryPolicy;
-        if ((bool)IsCustomTransportSet!.GetValue(source)!) copy.Transport = source.Transport;
+        // Copied even when the caller never set one: the storage SDK doesn't pass transport options, so it never asks
+        // whether a transport was set, and the caller's options keep the default transport they started with.
+        copy.Transport = source.Transport;
 
         copy.Retry.Mode = source.Retry.Mode;
         copy.Retry.MaxRetries = source.Retry.MaxRetries;

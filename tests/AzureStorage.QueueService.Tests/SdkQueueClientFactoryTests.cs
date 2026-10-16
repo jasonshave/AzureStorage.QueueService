@@ -10,6 +10,7 @@ using Azure.Storage.Queues;
 using Azure.Storage.Queues.Models;
 using Azure.Storage.Queues.Specialized;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Testing;
 
 namespace AzureStorage.QueueService.Tests;
 
@@ -164,27 +165,89 @@ public class SdkQueueClientFactoryTests
         copy.Retry.Should().BeEquivalentTo(source.Retry);
         copy.Diagnostics.Should().BeEquivalentTo(source.Diagnostics);
         copy.Diagnostics.LoggedHeaderNames.Should().NotBeSameAs(source.Diagnostics.LoggedHeaderNames);
+        copy.Transport.Should().BeSameAs(source.Transport);
+
+        // A subclass may hold settings the copy can't see, so it's refused and the factory falls back.
+        FluentActions.Invoking(() => QueueClientOptionsCopy.Copy(new DerivedOptions())).Should().Throw<NotSupportedException>();
+    }
+
+    [Fact]
+    public async Task CreateClient_Base64_WhenTheCopyFails_FallsBackToATemporaryHandlerAndLogsOnce()
+    {
+        // arrange
+        var transport = new PeekTransport("not base64!");
+        var options = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64, Transport = transport };
+        options.MessageDecodingFailed += _ => Task.CompletedTask;
+        var source = new QueueClientSettings { ConnectionString = "UseDevelopmentStorage=true", QueueName = "orders", ClientOptions = options };
+        var logger = new FakeLogger<SdkQueueClientFactory>();
+        var factory = new SdkQueueClientFactory(logger, _ => throw new NotSupportedException("copy unavailable"));
+
+        // act
+        var client = factory.CreateClient(Description, source);
+        factory.CreateClient(Description, QueueClientFactory.ForSiblingQueue(source, "orders-poison"));
+
+        // assert: the library's handler made it onto its client...
+        var failures = DecodingFailures.Begin();
+        try
+        {
+            await client.PeekMessagesAsync(1);
+        }
+        finally
+        {
+            DecodingFailures.End();
+        }
+
+        failures.Should().ContainSingle();
+
+        // ...and back off the caller's options: outside a library receive it would make this peek throw.
+        (await new QueueClient("UseDevelopmentStorage=true", "orders", options).PeekMessagesAsync(1)).Value.Should().BeEmpty();
+        logger.Collector.GetSnapshot().Should().ContainSingle(r => r.Id.Id == 45);
     }
 
     [Fact]
     public void Copy_KnowsEverySettingOfTheInstalledAzureSdk()
     {
         // Fails on an Azure SDK update that renames a member the copy reads by reflection (the library would fall back
-        // to briefly changing caller options) or adds a setting the copy doesn't carry yet (it would be dropped).
+        // to briefly changing caller options) or changes what the options store, public or not (a new setting would be
+        // dropped by the copy).
         QueueClientOptionsCopy.IsSupported.Should().BeTrue();
 
-        static IEnumerable<string> Members([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicEvents)] Type type) =>
-            type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Select(p => p.Name)
-                .Concat(type.GetEvents(BindingFlags.Public | BindingFlags.Instance).Select(e => e.Name));
+        const string because = "QueueClientOptionsCopy copies these settings one by one; re-check it carries any added or renamed one, then update this list";
 
-        Members(typeof(SpecializedQueueClientOptions)).Should().BeEquivalentTo(
-            "ClientSideEncryption", "Version", "GeoRedundantSecondaryUri", "MessageEncoding", "EnableTenantDiscovery",
-            "Audience", "Transport", "Diagnostics", "Retry", "RetryPolicy", "MessageDecodingFailed");
-        Members(typeof(RetryOptions)).Should().BeEquivalentTo("MaxRetries", "Delay", "MaxDelay", "Mode", "NetworkTimeout");
-        Members(typeof(DiagnosticsOptions)).Should().BeEquivalentTo(
-            "IsLoggingEnabled", "IsDistributedTracingEnabled", "IsTelemetryEnabled", "IsLoggingContentEnabled",
-            "LoggedContentSizeLimit", "LoggedHeaderNames", "LoggedQueryParameters", "ApplicationId");
+        static IEnumerable<string> Fields([DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicFields | DynamicallyAccessedMemberTypes.NonPublicFields)] Type type)
+        {
+            for (var t = type; t is not null && t != typeof(object); t = t.BaseType)
+            {
+                foreach (var field in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                    yield return $"{t.Name}.{field.Name}";
+            }
+        }
+
+        Fields(typeof(SpecializedQueueClientOptions)).Should().BeEquivalentTo(
+        [
+            "QueueClientOptions.<Version>k__BackingField", "QueueClientOptions.<GeoRedundantSecondaryUri>k__BackingField",
+            "QueueClientOptions.<MessageEncoding>k__BackingField", "QueueClientOptions.<EnableTenantDiscovery>k__BackingField",
+            "QueueClientOptions.MessageDecodingFailed", "QueueClientOptions._clientSideEncryptionOptions",
+            "QueueClientOptions.<Audience>k__BackingField", "ClientOptions._transport", "ClientOptions.<IsCustomTransportSet>k__BackingField",
+            "ClientOptions.<Diagnostics>k__BackingField", "ClientOptions.<Retry>k__BackingField", "ClientOptions.<RetryPolicy>k__BackingField",
+            "ClientOptions.<Policies>k__BackingField",
+        ], because);
+        Fields(typeof(DiagnosticsOptions)).Should().BeEquivalentTo(
+        [
+            "DiagnosticsOptions._applicationId", "DiagnosticsOptions._maxApplicationIdLength",
+            "DiagnosticsOptions.<IsLoggingEnabled>k__BackingField", "DiagnosticsOptions.<IsDistributedTracingEnabled>k__BackingField",
+            "DiagnosticsOptions.<IsTelemetryEnabled>k__BackingField", "DiagnosticsOptions.<IsLoggingContentEnabled>k__BackingField",
+            "DiagnosticsOptions.<LoggedContentSizeLimit>k__BackingField", "DiagnosticsOptions.<LoggedHeaderNames>k__BackingField",
+            "DiagnosticsOptions.<LoggedQueryParameters>k__BackingField",
+        ], because);
+        Fields(typeof(RetryOptions)).Should().BeEquivalentTo(
+        [
+            "RetryOptions.<MaxRetries>k__BackingField", "RetryOptions.<Delay>k__BackingField", "RetryOptions.<MaxDelay>k__BackingField",
+            "RetryOptions.<Mode>k__BackingField", "RetryOptions.<NetworkTimeout>k__BackingField",
+        ], because);
     }
+
+    private sealed class DerivedOptions : QueueClientOptions;
 
     private sealed class CountingPolicy : HttpPipelineSynchronousPolicy
     {
