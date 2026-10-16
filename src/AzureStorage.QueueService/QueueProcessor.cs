@@ -31,75 +31,16 @@ internal sealed record ProcessorHooks<TMessage, THandler>(
 /// <summary>
 /// The hosted processor behind <c>AddProcessor&lt;TMessage, THandler&gt;()</c>: one receive loop that takes as many
 /// messages as there are free handlers (up to <see cref="QueueProcessorOptions.MaxConcurrentMessages"/> at once, 32 per
-/// request) and delivers each on its own task. One instance per registration.
+/// request) and delivers each on its own task. One instance per registration. Everything but the delivery of one
+/// message is <see cref="QueueProcessorBase{TMessage}"/>, which the batch processor shares.
 /// </summary>
-/// <remarks>
-/// <para>
-/// No message waits behind another's handler, and the processor never holds a message no handler is free for: a receive
-/// asks only for as many messages as there are free slots, and each message's lease renewal starts as its delivery does.
-/// A full batch means more may be waiting, so the loop asks again at once; an empty one backs off.
-/// </para>
-/// <para>
-/// Lifecycle: <see cref="IHostedService.StartAsync"/> snapshots and validates the options and resolves the queue (a
-/// misconfigured client fails startup on purpose). Receiving starts when the host reports
-/// <see cref="IHostApplicationLifetime.ApplicationStarted"/> — the signal that every startup callback succeeded — so a
-/// slow start does not hold leases and a start that fails part-way never polls at all; without a host lifetime (a
-/// direct test) it starts in <see cref="IHostedLifecycleService.StartedAsync"/>. On shutdown, receiving stops; running handlers get
-/// <see cref="QueueProcessorOptions.ShutdownDrainTimeout"/> to finish; then their token is cancelled and lease renewal
-/// stops in the same moment; a handler that ignores its token gets the same time again, after which shutdown stops
-/// waiting for it. If the host's own shutdown deadline arrives first, the handlers are cancelled at that moment and
-/// <see cref="StopAsync"/> returns rather than throwing, as <c>BackgroundService</c> does. The cancellations happen no
-/// matter how <see cref="StopAsync"/> exits. Nothing that happens at runtime stops the host, and a receive loop that fails
-/// unexpectedly is logged loudly and restarted rather than silently lost.
-/// </para>
-/// </remarks>
-internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHostedLifecycleService, IControlledProcessor, IDisposable
+internal sealed class QueueProcessor<TMessage, THandler> : QueueProcessorBase<TMessage>
     where THandler : class, IQueueMessageHandler<TMessage>
 {
-    private readonly string _clientName;
     private readonly string _optionsName;
-    private readonly IQueueClientFactory _factory;
-    private readonly IServiceScopeFactory _scopes;
     private readonly IOptionsFactory<QueueProcessorOptions> _optionsFactory;
-    private readonly ILogger _logger;
-    private readonly QueueServiceMetrics _metrics;
-    private readonly TimeProvider _time;
-    private readonly IHostApplicationLifetime? _lifetime;
-    private readonly QueueProcessorController? _controller;
     private readonly ProcessorHooks<TMessage, THandler> _hooks;
-    private readonly string _handlerName;
-
-    private readonly CancellationTokenSource _stopReceiving = new();
-    private readonly CancellationTokenSource _cancelHandlers = new();
-    private readonly CancellationTokenSource _stopRenewals = new();
-
-    // Taken once, up front: reading Token from a disposed source throws, and a delivery can still be running when a
-    // host that gave up waiting disposes the processor.
-    private readonly CancellationToken _handlerToken;
-    private readonly CancellationToken _renewalToken;
-    private readonly object _startLock = new();
-    private CancellationTokenRegistration _startWhenApplicationStarted;
-
-    // Deliveries in flight, by a sequence number, with the timestamp each started at: for draining, and for the
-    // oldest-handler gauge and status.
-    private readonly ConcurrentDictionary<long, (Task Task, long Started)> _deliveries = new();
-    private long _deliverySequence;
-
-    private QueueProcessorOptions _options = new();
-    private SemaphoreSlim? _slots;
-    private IStorageQueue? _queue;
-    private Task? _receiver;
-    private string _name;
-    private IDisposable? _registration;
-    private IDisposable? _ageGauge;
-    private volatile QueueProcessorState _state = QueueProcessorState.NotStarted;
-    private bool _pausedLogged;
-
-    // Receive health, for status: written by the receive loop only, and replaced as a whole so a reader on another
-    // thread (a health probe) never sees half of an update.
-    private volatile ReceiveHealth _health = new(null, null, 0, null);
-
-    private sealed record ReceiveHealth(DateTimeOffset? SucceededAt, DateTimeOffset? FailedAt, int ConsecutiveFailures, string? LastError);
+    private QueueProcessorOptions _typedOptions = new();
 
     public QueueProcessor(
         string clientName,
@@ -113,27 +54,277 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         IHostApplicationLifetime? lifetime = null,
         ProcessorHooks<TMessage, THandler>? hooks = null,
         QueueProcessorController? controller = null)
+        : base(
+            "QueueProcessor", clientName,
+            // A wrapper handler (the CloudEvent adapter, a router, a lambda) passes the application's handler name, so logs
+            // name what the application wrote rather than the library's wrapper.
+            hooks?.HandlerName ?? typeof(THandler).Name,
+            factory, scopes, loggerFactory, metrics, time, lifetime, controller, hooks?.ReadBody, hooks?.AfterDeserialize)
     {
         _hooks = hooks ?? new ProcessorHooks<TMessage, THandler>();
-        // A wrapper handler (the CloudEvent adapter, a router, a lambda) passes the application's handler name, so logs
-        // name what the application wrote rather than the library's wrapper.
-        _handlerName = _hooks.HandlerName ?? typeof(THandler).Name;
-        _clientName = clientName;
         _optionsName = optionsName;
+        _optionsFactory = optionsFactory;
+    }
+
+    private protected override QueueProcessorOptionsBase CreateOptions() => _typedOptions = _optionsFactory.Create(_optionsName);
+
+    private protected override int MessagesPerDelivery => 1;
+
+    private protected override int MaxConcurrentDeliveries => _typedOptions.MaxConcurrentMessages;
+
+    private protected override Task DeliverAsync(IReadOnlyList<QueueMessage<TMessage>> messages, IOwnedReceiver? owned, long started) =>
+        DeliverOneAsync(messages[0], owned, started);
+
+    // ------------------------------------------------------------------------------------------------------------
+    // One delivery: the complete lifecycle of one message, with one exception boundary. Never throws.
+    // ------------------------------------------------------------------------------------------------------------
+
+    private async Task DeliverOneAsync(QueueMessage<TMessage> message, IOwnedReceiver? owned, long started)
+    {
+        var outcome = "abandoned";
+        Exception? failure = null;
+        var lease = message.Lease;
+        lease.IsLastAttempt |= message.DequeueCount >= _options.MaxDequeueCount;
+
+        using var logScope = _logger.BeginDeliveryScope(QueueName, message.MessageId, message.DequeueCount);
+
+        var tags = QueueServiceDiagnostics.OperationTags(QueueName, QueueServiceDiagnostics.Messaging.Process);
+        tags.Add(QueueServiceDiagnostics.Names.MessageId, message.MessageId);
+        tags.Add(QueueServiceDiagnostics.Names.DequeueCount, message.DequeueCount);
+        tags.Add(QueueServiceDiagnostics.Messaging.MessageId, message.MessageId);
+        using Activity? activity = QueueServiceDiagnostics.Activities.StartProcessingMessageActivity(tags, message.CreationContext);
+        lease.DeliveryActivity = activity;
+
+        _metrics.ActiveHandlers.Add(1, QueueTags());
+        RecordTimeInQueue(message);
+
+        // Armed before anything else — including downloading and deserializing — so nothing that happens to this
+        // message while it is ours can let the lease lapse.
+        await using var renewal = StartRenewal(message);
+
+        using var longRunning = _options.LongRunningHandlerWarning is { } threshold
+            ? _time.CreateTimer(_ => _logger.LogProcessorHandlerLongRunning(_name, message.MessageId, _time.GetElapsedTime(started), threshold, RenewalNote()), null, threshold, Timeout.InfiniteTimeSpan)
+            : null;
+
+        try
+        {
+            if (!await ReadBodyAsync(message, owned))
+            {
+                // Cancelled while downloading the body at shutdown: give it straight back.
+                await StopRenewalAsync(renewal);
+                _logger.LogProcessorHandlerCancelled(_name, message.MessageId);
+                if (!message.IsSettled) await AbandonSafelyAsync(message, TimeSpan.Zero);
+                return;
+            }
+
+            if (await RejectIfUnprocessableAsync(message, renewal) is { } rejected)
+            {
+                outcome = rejected;
+                return;
+            }
+
+            try
+            {
+                // Resolving the handler and the middleware is inside the boundary: a constructor that throws is a failed delivery too.
+                await using var scope = _scopes.CreateAsyncScope();
+                var context = new QueueMessageContext(message, scope.ServiceProvider, _clientName, typeof(TMessage), _handlerName, _handlerToken);
+                await Pipeline(message)(context);
+            }
+            catch (OperationCanceledException) when (_handlerToken.IsCancellationRequested && !message.IsSettled)
+            {
+                await StopRenewalAsync(renewal);
+                _logger.LogProcessorHandlerCancelled(_name, message.MessageId);
+                if (!message.IsSettled) await AbandonSafelyAsync(message, TimeSpan.Zero);
+                return;
+            }
+            catch (Exception ex) when (!message.IsSettled)
+            {
+                await StopRenewalAsync(renewal);
+                failure = ex;
+                activity.RecordFailure(ex);
+                _metrics.MessageFailures.Add(1, QueueTags());
+                outcome = await HandleFailureAsync(message, ex);
+                return;
+            }
+            catch (Exception ex)
+            {
+                // The handler settled the message and then threw. The settlement stands; report it as what it was:
+                // an exception on a span that did not fail, so no error status.
+                _logger.LogHandlerFailedAfterSettling(QueueName, message.MessageId, message.Settlement, ex);
+                activity?.AddException(ex);
+            }
+
+            // Wait for any renewal already in flight so completion uses the receipt the service holds.
+            await StopRenewalAsync(renewal);
+            (outcome, failure) = await SettleAfterReturnAsync(message, activity);
+        }
+        catch (Exception ex)
+        {
+            // Anything the inner boundaries did not cover: scope disposal, an option callback, a logging sink.
+            // A delivery must never fault silently and leave its message in limbo.
+            _logger.LogProcessorDeliveryFailed(_name, message.MessageId, ex);
+            failure = ex;
+            activity.RecordFailure(ex);
+            _metrics.MessageFailures.Add(1, QueueTags());
+            if (!message.IsSettled) await AbandonSafelyAsync(message, QueueProcessorOptions.MaxRetryDelay);
+            outcome = "abandoned";
+        }
+        finally
+        {
+            await StopRenewalAsync(renewal);
+            _metrics.ActiveHandlers.Add(-1, QueueTags());
+
+            var elapsed = _time.GetElapsedTime(started).TotalSeconds;
+            RecordOutcome(outcome, elapsed);
+            _metrics.ProcessDuration.Record(elapsed, QueueServiceDiagnostics.MessagingTags(QueueName, QueueServiceDiagnostics.Messaging.Process, QueueServiceDiagnostics.Messaging.Process, failure));
+            activity?.SetTag(QueueServiceDiagnostics.Names.Outcome, outcome);
+            lease.DeliveryActivity = null;
+        }
+    }
+
+    private QueueMessageDelegate Pipeline(QueueMessage<TMessage> message)
+    {
+        QueueMessageDelegate next = async context =>
+        {
+            var handler = _hooks.CreateHandler is { } create ? create(context.Services) : context.Services.GetRequiredService<THandler>();
+            await handler.HandleAsync(message, context.CancellationToken);
+        };
+
+        if (_hooks.Middleware is not { Count: > 0 } middleware) return next;
+
+        for (var i = middleware.Count - 1; i >= 0; i--)
+        {
+            var resolve = middleware[i];
+            var inner = next;
+            next = context => resolve(context.Services).InvokeAsync(context, inner);
+        }
+
+        return next;
+    }
+}
+
+/// <summary>
+/// Everything a hosted processor does except deliver what it received: start and stop, the receive loop, pausing,
+/// status, and the per-message steps a delivery is built from (lease renewal, reading the body, the poison checks, the
+/// error policy, settlement). <see cref="QueueProcessor{TMessage, THandler}"/> delivers one message at a time;
+/// <see cref="QueueBatchProcessor{TMessage, THandler}"/> a batch.
+/// </summary>
+/// <remarks>
+/// <para>
+/// One receive loop per processor. It waits for a free delivery slot, takes every other free slot that fits in one
+/// receive, asks for that many slots' worth of messages, and starts each slot's share on its own task. No message waits
+/// behind another's handler, and the processor never holds a message no handler is free for. A full receive means more
+/// may be waiting, so the loop asks again at once; an empty one backs off.
+/// </para>
+/// <para>
+/// Lifecycle: <see cref="IHostedService.StartAsync"/> snapshots and validates the options and resolves the queue (a
+/// misconfigured client fails startup on purpose). Receiving starts when the host reports
+/// <see cref="IHostApplicationLifetime.ApplicationStarted"/> — the signal that every startup callback succeeded — so a
+/// slow start does not hold leases and a start that fails part-way never polls at all; without a host lifetime (a
+/// direct test) it starts in <see cref="IHostedLifecycleService.StartedAsync"/>. On shutdown, receiving stops; running handlers get
+/// <see cref="QueueProcessorOptionsBase.ShutdownDrainTimeout"/> to finish; then their token is cancelled and lease renewal
+/// stops in the same moment; a handler that ignores its token gets the same time again, after which shutdown stops
+/// waiting for it. If the host's own shutdown deadline arrives first, the handlers are cancelled at that moment and
+/// <see cref="StopAsync"/> returns rather than throwing, as <c>BackgroundService</c> does. The cancellations happen no
+/// matter how <see cref="StopAsync"/> exits. Nothing that happens at runtime stops the host, and a receive loop that fails
+/// unexpectedly is logged loudly and restarted rather than silently lost.
+/// </para>
+/// </remarks>
+internal abstract class QueueProcessorBase<TMessage> : IHostedService, IHostedLifecycleService, IControlledProcessor, IDisposable
+{
+    private protected readonly string _clientName;
+    private protected readonly string _handlerName;
+    private protected readonly IServiceScopeFactory _scopes;
+    private protected readonly ILogger _logger;
+    private protected readonly QueueServiceMetrics _metrics;
+    private protected readonly TimeProvider _time;
+
+    private readonly IQueueClientFactory _factory;
+    private readonly IHostApplicationLifetime? _lifetime;
+    private readonly QueueProcessorController? _controller;
+    private readonly Action<QueueMessage<TMessage>>? _readBody;
+    private readonly Action<QueueMessage<TMessage>>? _afterDeserialize;
+
+    private readonly CancellationTokenSource _stopReceiving = new();
+    private readonly CancellationTokenSource _cancelHandlers = new();
+    private readonly CancellationTokenSource _stopRenewals = new();
+
+    // Taken once, up front: reading Token from a disposed source throws, and a delivery can still be running when a
+    // host that gave up waiting disposes the processor.
+    private protected readonly CancellationToken _handlerToken;
+    private readonly CancellationToken _renewalToken;
+    private readonly object _startLock = new();
+    private CancellationTokenRegistration _startWhenApplicationStarted;
+
+    // Deliveries in flight, by a sequence number, with the timestamp each started at and how many messages it holds:
+    // for draining, and for the oldest-handler gauge and status.
+    private readonly ConcurrentDictionary<long, (Task Task, long Started, int Messages)> _deliveries = new();
+    private long _deliverySequence;
+
+    /// <summary>The options snapshot this processor runs with, taken in <see cref="StartAsync"/>.</summary>
+    private protected QueueProcessorOptionsBase _options = new QueueProcessorOptions();
+
+    private protected string _name;
+    private SemaphoreSlim? _slots;
+    private IStorageQueue? _queue;
+    private Task? _receiver;
+    private IDisposable? _registration;
+    private IDisposable? _ageGauge;
+    private volatile QueueProcessorState _state = QueueProcessorState.NotStarted;
+    private bool _pausedLogged;
+
+    // Receive health, for status: written by the receive loop only, and replaced as a whole so a reader on another
+    // thread (a health probe) never sees half of an update.
+    private volatile ReceiveHealth _health = new(null, null, 0, null);
+
+    private sealed record ReceiveHealth(DateTimeOffset? SucceededAt, DateTimeOffset? FailedAt, int ConsecutiveFailures, string? LastError);
+
+    private protected QueueProcessorBase(
+        string kind,
+        string clientName,
+        string handlerName,
+        IQueueClientFactory factory,
+        IServiceScopeFactory scopes,
+        ILoggerFactory loggerFactory,
+        QueueServiceMetrics metrics,
+        TimeProvider time,
+        IHostApplicationLifetime? lifetime,
+        QueueProcessorController? controller,
+        Action<QueueMessage<TMessage>>? readBody,
+        Action<QueueMessage<TMessage>>? afterDeserialize)
+    {
+        _handlerName = handlerName;
+        _clientName = clientName;
         _factory = factory;
         _scopes = scopes;
-        _optionsFactory = optionsFactory;
-        _logger = loggerFactory.CreateLogger($"AzureStorage.QueueService.QueueProcessor<{typeof(TMessage).Name}, {_handlerName}>");
+        _logger = loggerFactory.CreateLogger($"AzureStorage.QueueService.{kind}<{typeof(TMessage).Name}, {_handlerName}>");
         _metrics = metrics;
         _time = time;
         _lifetime = lifetime;
         _controller = controller;
+        _readBody = readBody;
+        _afterDeserialize = afterDeserialize;
         _name = _handlerName;
         _handlerToken = _cancelHandlers.Token;
         _renewalToken = _stopRenewals.Token;
     }
 
-    private string QueueName => _queue?.QueueName ?? _clientName;
+    /// <summary>Creates the options snapshot; the base validates it.</summary>
+    private protected abstract QueueProcessorOptionsBase CreateOptions();
+
+    /// <summary>How many messages one delivery takes: 1, or a batch processor's <see cref="QueueBatchProcessorOptions.MaxBatchSize"/>.</summary>
+    private protected abstract int MessagesPerDelivery { get; }
+
+    /// <summary>How many deliveries may run at once.</summary>
+    private protected abstract int MaxConcurrentDeliveries { get; }
+
+    /// <summary>
+    /// Delivers what one slot received (one message, or a batch of up to <see cref="MessagesPerDelivery"/>), from
+    /// arming lease renewal to settlement. Never throws.
+    /// </summary>
+    private protected abstract Task DeliverAsync(IReadOnlyList<QueueMessage<TMessage>> messages, IOwnedReceiver? owned, long started);
+
+    private protected string QueueName => _queue?.QueueName ?? _clientName;
 
     public string ClientName => _clientName;
 
@@ -144,9 +335,9 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
     public Task StartAsync(CancellationToken cancellationToken)
     {
         // A snapshot: these are the options the processor runs with for its whole life.
-        _options = _optionsFactory.Create(_optionsName);
+        _options = CreateOptions();
         _options.Validate($"Processor {_name}");
-        _slots = new SemaphoreSlim(_options.MaxConcurrentMessages, _options.MaxConcurrentMessages);
+        _slots = new SemaphoreSlim(MaxConcurrentDeliveries, MaxConcurrentDeliveries);
 
         // Throws for a misconfigured client. That fails host startup, which is the right time to find out.
         _queue = _clientName == Options.DefaultName ? _factory.GetQueue() : _factory.GetQueue(_clientName);
@@ -180,7 +371,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         {
             if (_receiver is not null || _stopReceiving.IsCancellationRequested) return;
 
-            _logger.LogProcessorStarted(_name, _options.MaxConcurrentMessages);
+            _logger.LogProcessorStarted(_name, MaxConcurrentDeliveries);
             _state = QueueProcessorState.Running;
             _receiver = Task.Run(() => ReceiverAsync(_stopReceiving.Token), CancellationToken.None);
         }
@@ -285,7 +476,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         TimeSpan? oldest = deliveries.Count == 0 ? null : _time.GetElapsedTime(deliveries.Min(d => d.Started));
         var health = _health;
         return new QueueProcessorStatus(
-            _clientName, QueueName, _handlerName, typeof(TMessage), state, deliveries.Count, _options.MaxConcurrentMessages,
+            _clientName, QueueName, _handlerName, typeof(TMessage), state, deliveries.Sum(d => d.Messages), MaxConcurrentDeliveries * MessagesPerDelivery,
             health.SucceededAt, health.FailedAt, health.ConsecutiveFailures, health.LastError, oldest);
     }
 
@@ -298,7 +489,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
     }
 
     // ------------------------------------------------------------------------------------------------------------
-    // The receive loop: take as many as there are free handlers, hand each to its own delivery, repeat
+    // The receive loop: take as many as there are free slots, hand each slot's share to its own delivery, repeat
     // ------------------------------------------------------------------------------------------------------------
 
     private async Task ReceiverAsync(CancellationToken stop)
@@ -341,6 +532,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         var queue = _queue!;
         var slots = _slots!;
         var owned = queue as IOwnedReceiver;
+        var perDelivery = MessagesPerDelivery;
         var emptyBackoff = _options.EmptyQueueBackoffMin;
         var errorBackoff = _options.EmptyQueueBackoffMin;
 
@@ -348,19 +540,22 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         {
             await WaitWhilePausedAsync(stop);
 
-            // At least one free handler, then every other one that is free right now.
+            // At least one free slot, then every other one that is free right now and fits in the same receive. For a
+            // single-message processor that is up to 32 slots; a full-size batch fills a receive on its own.
             await slots.WaitAsync(stop);
-            var take = 1;
-            while (take < StorageQueue.ServiceMaxMessages && slots.Wait(0)) take++;
+            var taken = 1;
+            while ((taken + 1) * perDelivery <= StorageQueue.ServiceMaxMessages && slots.Wait(0)) taken++;
+            var take = taken * perDelivery;
 
             IReadOnlyList<QueueMessage<TMessage>> messages;
             try
             {
                 if (_options.RateLimiter is { } limiter)
                 {
-                    var permitted = await AcquirePermitsAsync(limiter, take, stop);
-                    slots.Release(take - permitted);
-                    take = permitted;
+                    take = await AcquirePermitsAsync(limiter, take, stop);
+                    var needed = (take + perDelivery - 1) / perDelivery;
+                    Release(slots, taken - needed);
+                    taken = needed;
                 }
 
                 // The library's own queue hands messages over before reading their bodies, so renewal is armed first.
@@ -374,12 +569,12 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested)
             {
-                slots.Release(take);
+                Release(slots, taken);
                 return;
             }
             catch (Exception ex)
             {
-                slots.Release(take);
+                Release(slots, taken);
                 _health = _health with { FailedAt = _time.GetUtcNow(), ConsecutiveFailures = _health.ConsecutiveFailures + 1, LastError = ex.Message };
 
                 // Transport failures, a missing queue, no permission: log once, back off, keep going.
@@ -393,8 +588,13 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
                 continue;
             }
 
-            foreach (var message in messages) StartDelivery(message, owned);
-            if (messages.Count < take) slots.Release(take - messages.Count);
+            var started = 0;
+            for (var offset = 0; offset < messages.Count; offset += perDelivery, started++)
+            {
+                StartDelivery(perDelivery == 1 ? [messages[offset]] : messages.Skip(offset).Take(perDelivery).ToList(), owned);
+            }
+
+            Release(slots, taken - started);
 
             if (messages.Count == 0)
             {
@@ -406,6 +606,12 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
             // Something arrived, so more may be waiting: ask again as soon as a handler is free.
             emptyBackoff = _options.EmptyQueueBackoffMin;
         }
+    }
+
+    // SemaphoreSlim.Release(0) throws, and "none to give back" is the usual case.
+    private static void Release(SemaphoreSlim slots, int count)
+    {
+        if (count > 0) slots.Release(count);
     }
 
     private async Task WaitWhilePausedAsync(CancellationToken stop)
@@ -443,19 +649,19 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         return permitted;
     }
 
-    private void StartDelivery(QueueMessage<TMessage> message, IOwnedReceiver? owned)
+    private void StartDelivery(IReadOnlyList<QueueMessage<TMessage>> messages, IOwnedReceiver? owned)
     {
         var id = Interlocked.Increment(ref _deliverySequence);
         var started = _time.GetTimestamp();
         var delivery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _deliveries[id] = (delivery.Task, started);
+        _deliveries[id] = (delivery.Task, started, messages.Count);
 
         // On its own task, so neither renewal nor a handler that blocks before its first await can hold up the loop.
         _ = Task.Run(async () =>
         {
             try
             {
-                await DeliverAsync(message, owned, started);
+                await DeliverAsync(messages, owned, started);
             }
             finally
             {
@@ -482,36 +688,22 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
     private static TimeSpan Min(TimeSpan a, TimeSpan b) => a < b ? a : b;
 
     // ------------------------------------------------------------------------------------------------------------
-    // One delivery: the complete lifecycle of one message, with one exception boundary. Never throws.
+    // The steps a delivery is made of, per message
     // ------------------------------------------------------------------------------------------------------------
 
-    private async Task DeliverAsync(QueueMessage<TMessage> message, IOwnedReceiver? owned, long started)
+    private protected void RecordTimeInQueue(QueueMessage<TMessage> message)
     {
-        var outcome = "abandoned";
-        Exception? failure = null;
-        var lease = message.Lease;
-        lease.IsLastAttempt |= message.DequeueCount >= _options.MaxDequeueCount;
-
-        using var logScope = _logger.BeginDeliveryScope(QueueName, message.MessageId, message.DequeueCount);
-
-        var tags = QueueServiceDiagnostics.OperationTags(QueueName, QueueServiceDiagnostics.Messaging.Process);
-        tags.Add(QueueServiceDiagnostics.Names.MessageId, message.MessageId);
-        tags.Add(QueueServiceDiagnostics.Names.DequeueCount, message.DequeueCount);
-        tags.Add(QueueServiceDiagnostics.Messaging.MessageId, message.MessageId);
-        using Activity? activity = QueueServiceDiagnostics.Activities.StartProcessingMessageActivity(tags, message.CreationContext);
-        lease.DeliveryActivity = activity;
-
-        _metrics.ActiveHandlers.Add(1, QueueTags());
         if (message.InsertedOn is { } inserted)
             _metrics.TimeInQueue.Record(Math.Max(0, (_time.GetUtcNow() - inserted).TotalSeconds), QueueTags());
+    }
 
-        // Armed before anything else — including downloading and deserializing — so nothing that happens to this
-        // message while it is ours can let the lease lapse.
-        await using var renewal = _options.RenewVisibility
+    /// <summary>Starts renewing <paramref name="message"/>'s lease at half the visibility timeout; null with renewal off.</summary>
+    private protected LeaseRenewal? StartRenewal(QueueMessage<TMessage> message) =>
+        _options.RenewVisibility
             ? LeaseRenewal.Start(
                 async () =>
                 {
-                    await message.RenewLockAsync(_options.VisibilityTimeout, CancellationToken.None);
+                    await message.RenewVisibilityAsync(_options.VisibilityTimeout, CancellationToken.None);
                     _metrics.LeaseRenewals.Add(1, QueueTags());
                 },
                 () => message.IsSettled,
@@ -527,146 +719,15 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
                 () => _logger.LogProcessorRenewalLimitReached(_name, message.MessageId, _options.MaxRenewalDuration!.Value))
             : null;
 
-        using var longRunning = _options.LongRunningHandlerWarning is { } threshold
-            ? _time.CreateTimer(_ => _logger.LogProcessorHandlerLongRunning(_name, message.MessageId, _time.GetElapsedTime(started), threshold,
-                _options.MaxRenewalDuration is { } max ? $" until MaxRenewalDuration ({max})" : " for as long as it runs"), null, threshold, Timeout.InfiniteTimeSpan)
-            : null;
-
-        try
-        {
-            if (!await ReadBodyAsync(message, owned))
-            {
-                // Cancelled while downloading the body at shutdown: give it straight back.
-                await StopRenewalAsync(renewal);
-                _logger.LogProcessorHandlerCancelled(_name, message.MessageId);
-                if (!message.IsSettled) await AbandonSafelyAsync(message, TimeSpan.Zero);
-                return;
-            }
-
-            if (message.Error is UnroutableMessageException unroutable)
-            {
-                await StopRenewalAsync(renewal);
-                outcome = await DeadLetterOrAbandonAsync(message, unroutable.Message, DeadLetterCategories.Unroutable);
-                return;
-            }
-
-            if (message.Error is not null && _options.DeadLetterOnDeserializationFailure)
-            {
-                await StopRenewalAsync(renewal);
-                outcome = await DeadLetterOrAbandonAsync(message, $"the body could not be read: {message.Error.Message}", DeadLetterCategories.Deserialization);
-                return;
-            }
-
-            if (message.DequeueCount > _options.MaxDequeueCount)
-            {
-                await StopRenewalAsync(renewal);
-                outcome = await DeadLetterOrAbandonAsync(message, $"delivered {message.DequeueCount} times; the limit is {_options.MaxDequeueCount}", DeadLetterCategories.MaxDequeueCount);
-                return;
-            }
-
-            try
-            {
-                // Resolving the handler and the middleware is inside the boundary: a constructor that throws is a failed delivery too.
-                await using var scope = _scopes.CreateAsyncScope();
-                var context = new QueueMessageContext(message, scope.ServiceProvider, _clientName, typeof(TMessage), _handlerName, _handlerToken);
-                await Pipeline(message)(context);
-            }
-            catch (OperationCanceledException) when (_handlerToken.IsCancellationRequested && !message.IsSettled)
-            {
-                await StopRenewalAsync(renewal);
-                _logger.LogProcessorHandlerCancelled(_name, message.MessageId);
-                if (!message.IsSettled) await AbandonSafelyAsync(message, TimeSpan.Zero);
-                return;
-            }
-            catch (Exception ex) when (!message.IsSettled)
-            {
-                await StopRenewalAsync(renewal);
-                failure = ex;
-                activity.RecordFailure(ex);
-                _metrics.MessageFailures.Add(1, QueueTags());
-                outcome = await HandleFailureAsync(message, ex);
-                return;
-            }
-            catch (Exception ex)
-            {
-                // The handler settled the message and then threw. The settlement stands; report it as what it was:
-                // an exception on a span that did not fail, so no error status.
-                _logger.LogHandlerFailedAfterSettling(QueueName, message.MessageId, message.Settlement, ex);
-                activity?.AddException(ex);
-            }
-
-            // Wait for any renewal already in flight so completion uses the receipt the service holds.
-            await StopRenewalAsync(renewal);
-
-            switch (message.Settlement)
-            {
-                case MessageSettlement.Completed:
-                    outcome = "completed";
-                    break;
-                case MessageSettlement.Abandoned:
-                    outcome = "abandoned_by_handler";
-                    return;
-                case MessageSettlement.DeadLettered:
-                    outcome = "dead_lettered_by_handler";
-                    return;
-                case MessageSettlement.None when _options.AutoComplete:
-                    try
-                    {
-                        // Not tied to the shutdown token: cancelling a delete after the handler succeeded only redelivers finished work.
-                        await message.CompleteAsync(CancellationToken.None);
-                        outcome = "completed";
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogDeleteFailed(QueueName, message.MessageId, _options.VisibilityTimeout, ex);
-                        failure = ex;
-                        activity.RecordFailure(ex);
-                        _metrics.MessageFailures.Add(1, QueueTags());
-                        outcome = "complete_failed";
-                        return;
-                    }
-                    break;
-                default:
-                    // AutoComplete is off and the handler returned without settling: nothing was removed.
-                    outcome = "left_to_handler";
-                    return;
-            }
-
-            _logger.LogMessageProcessed(QueueName, message.MessageId);
-            _metrics.MessagesProcessed.Add(1, QueueTags());
-        }
-        catch (Exception ex)
-        {
-            // Anything the inner boundaries did not cover: scope disposal, an option callback, a logging sink.
-            // A delivery must never fault silently and leave its message in limbo.
-            _logger.LogProcessorDeliveryFailed(_name, message.MessageId, ex);
-            failure = ex;
-            activity.RecordFailure(ex);
-            _metrics.MessageFailures.Add(1, QueueTags());
-            if (!message.IsSettled) await AbandonSafelyAsync(message, QueueProcessorOptions.MaxRetryDelay);
-            outcome = "abandoned";
-        }
-        finally
-        {
-            await StopRenewalAsync(renewal);
-            _metrics.ActiveHandlers.Add(-1, QueueTags());
-
-            var elapsed = _time.GetElapsedTime(started).TotalSeconds;
-            var finalTags = QueueTags();
-            finalTags.Add(QueueServiceDiagnostics.Names.QueueProcessSuccess, outcome is "completed" or "left_to_handler");
-            finalTags.Add(QueueServiceDiagnostics.Names.Outcome, outcome);
-            _metrics.MessageProcessingDuration.Record(elapsed, finalTags);
-            _metrics.ProcessDuration.Record(elapsed, QueueServiceDiagnostics.MessagingTags(QueueName, QueueServiceDiagnostics.Messaging.Process, QueueServiceDiagnostics.Messaging.Process, failure));
-            activity?.SetTag(QueueServiceDiagnostics.Names.Outcome, outcome);
-            lease.DeliveryActivity = null;
-        }
-    }
+    /// <summary>The end of the long-running warning: how long the lease goes on being renewed.</summary>
+    private protected string RenewalNote() =>
+        _options.MaxRenewalDuration is { } max ? $" until MaxRenewalDuration ({max})" : " for as long as it runs";
 
     /// <summary>
     /// Brings in a body kept outside the queue and reads it, setting <see cref="QueueMessage{T}.Body"/> or
     /// <see cref="QueueMessage{T}.Error"/>. False when shutdown cancelled the download.
     /// </summary>
-    private async Task<bool> ReadBodyAsync(QueueMessage<TMessage> message, IOwnedReceiver? owned)
+    private protected async Task<bool> ReadBodyAsync(QueueMessage<TMessage> message, IOwnedReceiver? owned)
     {
         if (owned is not null)
         {
@@ -683,38 +744,78 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
 
         if (message.Error is null)
         {
-            if (_hooks.ReadBody is { } read) read(message);
+            if (_readBody is { } read) read(message);
             else owned?.Deserialize(message);
         }
 
         // A wrapper's own reading of the body (the CloudEvent adapter reads the event's data), which sets Error when it
         // fails, so that failure takes the dead-letter path with this processor's options snapshot, metric and outcome.
-        if (message.Error is null) _hooks.AfterDeserialize?.Invoke(message);
+        if (message.Error is null) _afterDeserialize?.Invoke(message);
         return true;
     }
 
-    private QueueMessageDelegate Pipeline(QueueMessage<TMessage> message)
+    /// <summary>
+    /// The checks before a handler sees a message: one nothing is routed for, one whose body could not be read (with
+    /// <see cref="QueueProcessorOptionsBase.DeadLetterOnDeserializationFailure"/>), and one delivered too often are
+    /// dead-lettered. Returns the outcome when it did that, or null when the message can go to the handler.
+    /// </summary>
+    private protected async Task<string?> RejectIfUnprocessableAsync(QueueMessage<TMessage> message, LeaseRenewal? renewal)
     {
-        QueueMessageDelegate next = async context =>
-        {
-            var handler = _hooks.CreateHandler is { } create ? create(context.Services) : context.Services.GetRequiredService<THandler>();
-            await handler.HandleAsync(message, context.CancellationToken);
-        };
+        string reason, category;
+        if (message.Error is UnroutableMessageException unroutable)
+            (reason, category) = (unroutable.Message, DeadLetterCategories.Unroutable);
+        else if (message.Error is not null && _options.DeadLetterOnDeserializationFailure)
+            (reason, category) = ($"the body could not be read: {message.Error.Message}", DeadLetterCategories.Deserialization);
+        else if (message.DequeueCount > _options.MaxDequeueCount)
+            (reason, category) = ($"delivered {message.DequeueCount} times; the limit is {_options.MaxDequeueCount}", DeadLetterCategories.MaxDequeueCount);
+        else
+            return null;
 
-        if (_hooks.Middleware is not { Count: > 0 } middleware) return next;
-
-        for (var i = middleware.Count - 1; i >= 0; i--)
-        {
-            var resolve = middleware[i];
-            var inner = next;
-            next = context => resolve(context.Services).InvokeAsync(context, inner);
-        }
-
-        return next;
+        await StopRenewalAsync(renewal);
+        return await DeadLetterOrAbandonAsync(message, reason, category);
     }
 
-    /// <summary>The error policy: <see cref="QueueProcessorOptions.DeadLetterOn{TException}"/>, then <see cref="QueueProcessorOptions.OnHandlerError"/>, then retry.</summary>
-    private async Task<string> HandleFailureAsync(QueueMessage<TMessage> message, Exception ex)
+    /// <summary>
+    /// After the handler returned: what its own settlement of the message means, or, when it left the message alone,
+    /// completion with <see cref="QueueProcessorOptionsBase.AutoComplete"/>. Logs and counts a completion. The failure
+    /// is a completion that failed.
+    /// </summary>
+    private protected async Task<(string Outcome, Exception? Failure)> SettleAfterReturnAsync(QueueMessage<TMessage> message, Activity? activity)
+    {
+        switch (message.Settlement)
+        {
+            case MessageSettlement.Completed:
+                break;
+            case MessageSettlement.Abandoned:
+                return ("abandoned_by_handler", null);
+            case MessageSettlement.DeadLettered:
+                return ("dead_lettered_by_handler", null);
+            case MessageSettlement.None when _options.AutoComplete:
+                try
+                {
+                    // Not tied to the shutdown token: cancelling a delete after the handler succeeded only redelivers finished work.
+                    await message.CompleteAsync(CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDeleteFailed(QueueName, message.MessageId, _options.VisibilityTimeout, ex);
+                    activity.RecordFailure(ex);
+                    _metrics.MessageFailures.Add(1, QueueTags());
+                    return ("complete_failed", ex);
+                }
+                break;
+            default:
+                // AutoComplete is off and the handler returned without settling: nothing was removed.
+                return ("left_to_handler", null);
+        }
+
+        _logger.LogMessageProcessed(QueueName, message.MessageId);
+        _metrics.MessagesProcessed.Add(1, QueueTags());
+        return ("completed", null);
+    }
+
+    /// <summary>The error policy: <c>DeadLetterOn&lt;TException&gt;()</c>, then <see cref="QueueProcessorOptionsBase.OnHandlerError"/>, then retry.</summary>
+    private protected async Task<string> HandleFailureAsync(QueueMessage<TMessage> message, Exception ex)
     {
         var action = DecideOnFailure(message, ex);
         switch (action)
@@ -765,7 +866,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         }
     }
 
-    private static ValueTask StopRenewalAsync(LeaseRenewal? renewal) => renewal?.StopAsync() ?? ValueTask.CompletedTask;
+    private protected static ValueTask StopRenewalAsync(LeaseRenewal? renewal) => renewal?.StopAsync() ?? ValueTask.CompletedTask;
 
     private TimeSpan RetryDelayFor(long dequeueCount)
     {
@@ -776,12 +877,12 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         }
         catch (Exception ex)
         {
-            _logger.LogProcessorRetryDelayFailed(_name, dequeueCount, QueueProcessorOptions.MaxRetryDelay, ex);
-            return QueueProcessorOptions.MaxRetryDelay;
+            _logger.LogProcessorRetryDelayFailed(_name, dequeueCount, QueueProcessorOptionsBase.MaxRetryDelay, ex);
+            return QueueProcessorOptionsBase.MaxRetryDelay;
         }
 
         // The service accepts 0 to 7 days; anything else would make the abandon itself fail.
-        return delay < TimeSpan.Zero ? TimeSpan.Zero : Min(delay, QueueProcessorOptions.MaxVisibility);
+        return delay < TimeSpan.Zero ? TimeSpan.Zero : Min(delay, QueueProcessorOptionsBase.MaxVisibility);
     }
 
     private async Task<string> DeadLetterOrAbandonAsync(QueueMessage<TMessage> message, string reason, string category)
@@ -801,7 +902,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         }
     }
 
-    private async ValueTask AbandonSafelyAsync(QueueMessage<TMessage> message, TimeSpan delay)
+    private protected async ValueTask AbandonSafelyAsync(QueueMessage<TMessage> message, TimeSpan delay)
     {
         try
         {
@@ -813,7 +914,16 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         }
     }
 
-    private TagList QueueTags() => QueueServiceDiagnostics.MetricTags(QueueName);
+    /// <summary>One message's processing time, tagged with how it ended.</summary>
+    private protected void RecordOutcome(string outcome, double elapsedSeconds)
+    {
+        var tags = QueueTags();
+        tags.Add(QueueServiceDiagnostics.Names.QueueProcessSuccess, outcome is "completed" or "left_to_handler");
+        tags.Add(QueueServiceDiagnostics.Names.Outcome, outcome);
+        _metrics.MessageProcessingDuration.Record(elapsedSeconds, tags);
+    }
+
+    private protected TagList QueueTags() => QueueServiceDiagnostics.MetricTags(QueueName);
 }
 
 /// <summary>A message a routed processor has no handler for; always dead-lettered, as no retry can find it one.</summary>

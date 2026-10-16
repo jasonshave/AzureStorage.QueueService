@@ -8,11 +8,89 @@ namespace AzureStorage.QueueService;
 /// scope, with its own lease renewal.
 /// </summary>
 /// <remarks>
-/// Everything except the callbacks (<see cref="RetryDelay"/>, <see cref="OnHandlerError"/>), <see cref="RateLimiter"/>
-/// and <see cref="DeadLetterOn{TException}"/> can be bound from configuration with the
+/// Everything except the callbacks (<see cref="QueueProcessorOptionsBase.RetryDelay"/>,
+/// <see cref="QueueProcessorOptionsBase.OnHandlerError"/>), <see cref="QueueProcessorOptionsBase.RateLimiter"/> and
+/// <see cref="DeadLetterOn{TException}"/> can be bound from configuration with the
 /// <c>AddProcessor&lt;TMessage, THandler&gt;(IConfiguration)</c> overload.
 /// </remarks>
-public sealed class QueueProcessorOptions
+public sealed class QueueProcessorOptions : QueueProcessorOptionsBase
+{
+    /// <summary>
+    /// How many messages may be handled at once, each in its own scope with its own lease renewal. The processor receives
+    /// only as many messages as there are free handlers (up to 32 per request), so it never holds a message no handler is
+    /// free for.
+    /// </summary>
+    public int MaxConcurrentMessages { get; set; } = 1;
+
+    /// <summary>
+    /// Dead-letters a message straight away, without retrying it, when its handler throws <typeparamref name="TException"/>
+    /// or an exception derived from it: one that retrying cannot fix, such as a validation failure. Checked before
+    /// <see cref="QueueProcessorOptionsBase.OnHandlerError"/>.
+    /// </summary>
+    public QueueProcessorOptions DeadLetterOn<TException>() where TException : Exception
+    {
+        AddDeadLetterType(typeof(TException));
+        return this;
+    }
+
+    internal override void Validate(string processorName)
+    {
+        if (MaxConcurrentMessages < 1) Fail(processorName, "MaxConcurrentMessages must be at least 1.");
+        base.Validate(processorName);
+    }
+}
+
+/// <summary>
+/// How a batch processor registered with <c>AddBatchProcessor&lt;TMessage, THandler&gt;()</c> runs. Each receive takes
+/// up to <see cref="MaxBatchSize"/> messages and hands them to one handler call in one scope; up to
+/// <see cref="MaxConcurrentBatches"/> batches are handled at once. Every message keeps its own lease renewal, dequeue
+/// count, retry delay and settlement.
+/// </summary>
+/// <remarks>
+/// Everything except the callbacks (<see cref="QueueProcessorOptionsBase.RetryDelay"/>,
+/// <see cref="QueueProcessorOptionsBase.OnHandlerError"/>), <see cref="QueueProcessorOptionsBase.RateLimiter"/> and
+/// <see cref="DeadLetterOn{TException}"/> can be bound from configuration with the
+/// <c>AddBatchProcessor&lt;TMessage, THandler&gt;(IConfiguration)</c> overload. A rate limiter still takes one permit
+/// per message, so it can make a batch smaller.
+/// </remarks>
+public sealed class QueueBatchProcessorOptions : QueueProcessorOptionsBase
+{
+    /// <summary>
+    /// The most messages handed to the handler in one call: 1 to 32 (the most one receive returns), default 32. A batch is
+    /// whatever one receive returns, so it is smaller when fewer messages are waiting; the processor does not wait to fill it.
+    /// </summary>
+    public int MaxBatchSize { get; set; } = StorageQueue.ServiceMaxMessages;
+
+    /// <summary>
+    /// How many batches may be handled at once, each in its own scope; default 1. The processor holds at most
+    /// <see cref="MaxConcurrentBatches"/> × <see cref="MaxBatchSize"/> messages.
+    /// </summary>
+    public int MaxConcurrentBatches { get; set; } = 1;
+
+    /// <summary>
+    /// When the handler throws <typeparamref name="TException"/> or an exception derived from it, dead-letters every
+    /// message of the batch it had not settled, without retrying them. Checked before
+    /// <see cref="QueueProcessorOptionsBase.OnHandlerError"/>.
+    /// </summary>
+    public QueueBatchProcessorOptions DeadLetterOn<TException>() where TException : Exception
+    {
+        AddDeadLetterType(typeof(TException));
+        return this;
+    }
+
+    internal override void Validate(string processorName)
+    {
+        if (MaxBatchSize is < 1 or > StorageQueue.ServiceMaxMessages) Fail(processorName, $"MaxBatchSize must be between 1 and {StorageQueue.ServiceMaxMessages} (it is {MaxBatchSize}).");
+        if (MaxConcurrentBatches < 1) Fail(processorName, "MaxConcurrentBatches must be at least 1.");
+        base.Validate(processorName);
+    }
+}
+
+/// <summary>
+/// What <see cref="QueueProcessorOptions"/> and <see cref="QueueBatchProcessorOptions"/> share: leases, retries, the
+/// poison queue, the error policy, polling and shutdown. They differ only in how much is handled at once.
+/// </summary>
+public abstract class QueueProcessorOptionsBase
 {
     internal static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
 
@@ -24,13 +102,10 @@ public sealed class QueueProcessorOptions
 
     private readonly List<Type> _deadLetterOn = new();
 
-
-    /// <summary>
-    /// How many messages may be handled at once, each in its own scope with its own lease renewal. The processor receives
-    /// only as many messages as there are free handlers (up to 32 per request), so it never holds a message no handler is
-    /// free for.
-    /// </summary>
-    public int MaxConcurrentMessages { get; set; } = 1;
+    // Only the library's own option types derive from this.
+    private protected QueueProcessorOptionsBase()
+    {
+    }
 
     /// <summary>
     /// How long a received message stays hidden while a handler runs: 1 second to 7 days, in whole seconds (the
@@ -83,21 +158,11 @@ public sealed class QueueProcessorOptions
     };
 
     /// <summary>
-    /// Decides what happens to a message whose handler threw, when no <see cref="DeadLetterOn{TException}"/> rule matched:
-    /// retry it (the default without a callback), dead-letter it, or complete it. If the callback throws, the message is retried.
+    /// Decides what happens to a message whose handler threw, when no <c>DeadLetterOn&lt;TException&gt;()</c> rule
+    /// matched: retry it (the default without a callback), dead-letter it, or complete it. If the callback throws, the
+    /// message is retried. A batch processor asks once for each message the handler had not settled.
     /// </summary>
     public Func<HandlerErrorContext, HandlerErrorAction>? OnHandlerError { get; set; }
-
-    /// <summary>
-    /// Dead-letters a message straight away, without retrying it, when its handler throws <typeparamref name="TException"/>
-    /// or an exception derived from it: one that retrying cannot fix, such as a validation failure. Checked before
-    /// <see cref="OnHandlerError"/>.
-    /// </summary>
-    public QueueProcessorOptions DeadLetterOn<TException>() where TException : Exception
-    {
-        if (!_deadLetterOn.Contains(typeof(TException))) _deadLetterOn.Add(typeof(TException));
-        return this;
-    }
 
     internal IReadOnlyList<Type> DeadLetterExceptionTypes => _deadLetterOn;
 
@@ -127,9 +192,13 @@ public sealed class QueueProcessorOptions
     /// </summary>
     public TimeSpan ShutdownDrainTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
-    internal void Validate(string processorName)
+    private protected void AddDeadLetterType(Type exceptionType)
     {
-        if (MaxConcurrentMessages < 1) Fail(processorName, "MaxConcurrentMessages must be at least 1.");
+        if (!_deadLetterOn.Contains(exceptionType)) _deadLetterOn.Add(exceptionType);
+    }
+
+    internal virtual void Validate(string processorName)
+    {
         // The SDK sends whole seconds, so anything under a second becomes 0 and the service rejects every receive.
         if (VisibilityTimeout < TimeSpan.FromSeconds(1) || VisibilityTimeout > MaxVisibility) Fail(processorName, $"VisibilityTimeout must be between 1 second and 7 days (it is {VisibilityTimeout}).");
         // Renewal runs at half the timeout; with a fraction the service's lease is shorter than that half assumes.
@@ -153,13 +222,13 @@ public sealed class QueueProcessorOptions
         }
     }
 
-    private static void Fail(string processorName, string problem) => throw new InvalidOperationException($"{processorName}: {problem}");
+    private protected static void Fail(string processorName, string problem) => throw new InvalidOperationException($"{processorName}: {problem}");
 }
 
 /// <summary>What a processor does with a message whose handler threw.</summary>
 public enum HandlerErrorAction
 {
-    /// <summary>Abandon it with <see cref="QueueProcessorOptions.RetryDelay"/>, to be delivered again; dead-lettered once it passes <see cref="QueueProcessorOptions.MaxDequeueCount"/>.</summary>
+    /// <summary>Abandon it with <see cref="QueueProcessorOptionsBase.RetryDelay"/>, to be delivered again; dead-lettered once it passes <see cref="QueueProcessorOptionsBase.MaxDequeueCount"/>.</summary>
     Retry,
 
     /// <summary>Move it to the poison queue now.</summary>
@@ -169,7 +238,10 @@ public enum HandlerErrorAction
     Complete,
 }
 
-/// <summary>What <see cref="QueueProcessorOptions.OnHandlerError"/> is told about a failed delivery.</summary>
+/// <summary>
+/// What <see cref="QueueProcessorOptionsBase.OnHandlerError"/> is told about a failed delivery. For a batch handler it
+/// is asked once for each message the handler had not settled, with the same exception.
+/// </summary>
 public sealed class HandlerErrorContext
 {
     internal HandlerErrorContext(Exception exception, IQueueMessage message)

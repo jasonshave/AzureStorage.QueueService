@@ -32,6 +32,17 @@ internal class QueueServiceDiagnostics
             var parent = Activity.Current is null ? creation : default;
             return ActivitySource.StartActivityWithTags(Names.ProcessingMessage, ActivityKind.Consumer, tags, parent, [new ActivityLink(creation)]);
         }
+
+        /// <summary>
+        /// Starts the span for processing a batch. It links to every sender's trace context that was carried, as the
+        /// messaging conventions recommend for batches; no one sender's trace can be its parent, so it keeps the ambient
+        /// parent, or none.
+        /// </summary>
+        public static Activity? StartProcessingBatchActivity(in TagList tags, IEnumerable<ActivityContext?> creationContexts)
+        {
+            var links = creationContexts.Where(c => c.HasValue).Select(c => new ActivityLink(c!.Value)).ToList();
+            return ActivitySource.StartActivityWithTags(Names.ProcessingMessage, ActivityKind.Consumer, tags, links: links.Count == 0 ? null : links);
+        }
     }
 
     public struct Names

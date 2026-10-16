@@ -7,11 +7,11 @@ namespace AzureStorage.QueueService;
 internal sealed class JsonQueueMessageSerializer : IQueueMessageSerializer
 {
     /// <summary>
-    /// The library's defaults: System.Text.Json's, except that property names are read case-insensitively, so a camelCase
-    /// message from JavaScript, Azure Functions or Event Grid fills a PascalCase .NET type instead of arriving with empty
-    /// fields. Writing is unchanged (PascalCase).
+    /// The library's defaults: System.Text.Json's web defaults. Property names are written in camelCase, as JavaScript,
+    /// Azure Functions and Event Grid write them, and read case-insensitively, so a PascalCase message from an older
+    /// sender still fills its .NET type instead of arriving with empty fields.
     /// </summary>
-    public static readonly JsonSerializerOptions DefaultOptions = new() { PropertyNameCaseInsensitive = true };
+    public static readonly JsonSerializerOptions DefaultOptions = new(JsonSerializerDefaults.Web);
 
     private readonly JsonSerializerOptions _options;
 

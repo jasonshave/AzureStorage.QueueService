@@ -14,10 +14,10 @@ Still on .NET 8? Use the 2.x package line, which stays on .NET 8 and keeps recei
 
 - **Send** with `IQueueSender`: your object goes in, JSON goes on the queue, with optional headers, a delay and compression.
 - **Receive** with `IQueueReceiver`: each message comes back typed, with its identity, and you complete, abandon or dead-letter it.
-- **Process** with `AddProcessor<TMessage, THandler>()`: the library runs the loop — backoff, lease renewal, retries, a poison queue, cancellation and graceful shutdown — and hands each message to a handler resolved from its own dependency-injection scope. Handlers can be classes or lambdas, share middleware, and share one queue between several message types.
+- **Process** with `AddProcessor<TMessage, THandler>()`: the library runs the loop — backoff, lease renewal, retries, a poison queue, cancellation and graceful shutdown — and hands each message to a handler resolved from its own dependency-injection scope. Handlers can be classes or lambdas, share middleware, and share one queue between several message types. `AddBatchProcessor<TMessage, THandler>()` hands them over up to 32 at a time instead.
 - **Look after the poison queue** with `IDeadLetterQueue`: see what was dead-lettered and why, and move messages back once the cause is fixed.
 
-Upgrading? See [Upgrading from 3.0 to 3.1](#upgrading-from-30-to-31) for the behaviour changes, or [Upgrading from 2.x](#upgrading-from-2x) for the mapping from the old API.
+Upgrading? See [Upgrading from 3.0 to 3.1](#upgrading-from-30-to-31) for the breaking and behaviour changes, or [Upgrading from 2.x](#upgrading-from-2x) for the mapping from the old API.
 
 ## Install
 
@@ -45,7 +45,7 @@ builder.Services.AddAzureStorageQueueClient(queues =>
             settings.TokenCredential = new DefaultAzureCredential();
             settings.CreateIfNotExists = true;
         })
-        .UseJsonSerializer(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        .UseJsonSerializer(new JsonSerializerOptions(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull });
 
     // Fail host startup if any client is missing its connection details
     queues.ValidateOnStart();
@@ -130,7 +130,7 @@ queues.AddClient("legacy", settings =>
 });
 ```
 
-Those senders usually write camelCase JSON. The library's default serializer reads property names case-insensitively, so `{"orderId": 7}` fills `OrderId`. It still writes PascalCase; use `UseJsonSerializer(new JsonSerializerOptions(JsonSerializerDefaults.Web))` to write camelCase too.
+Those senders usually write camelCase JSON, which is also what the library's default serializer writes. It reads property names case-insensitively, so `{"orderId": 7}` and `{"OrderId": 7}` both fill `OrderId`.
 
 ### Client-side encryption
 
@@ -171,7 +171,7 @@ await notifications.SendAsync(new Notification("tagged"), new SendOptions
 });
 ```
 
-`SendOptions` takes a `Delay` (also called `VisibilityTimeout`: 0 to 7 days), a `TimeToLive` (`Timeout.InfiniteTimeSpan` for never; the service default is 7 days), `Headers`, and a `MessageType`. A delay the message would expire within, or a message over the service's 64 KiB limit, throws before anything is sent: `ArgumentOutOfRangeException` and `QueueMessageTooLargeException` respectively. The size is checked as the message would go on the queue, so Base64 encoding and the library's envelope count. The return value is the SDK's `SendReceipt`. Failures are logged and thrown.
+`SendOptions` takes a `Delay` (also called `VisibilityTimeout`: 0 to 7 days), a `TimeToLive` (`Timeout.InfiniteTimeSpan` for never; the service default is 7 days), `Headers`, and a `MessageType`. A delay the message would expire within, or a message over the service's 64 KiB limit, throws before anything is sent: `ArgumentOutOfRangeException` and `QueueMessageTooLargeException` respectively. The size is checked as the message would go on the queue, so Base64 encoding and the library's envelope count. The return value is a `SendResult`: the message's id, its pop receipt (which can delete or update it until someone receives it), and when it was inserted, expires and can first be received. Failures are logged and thrown.
 
 `UseCompression()` on a client gzips bodies of 1 KiB or more (pass another threshold if you like), skipping any message compression would not make smaller. Repetitive JSON often shrinks by 80% or more, which also keeps more messages under the 64 KiB limit.
 
@@ -180,7 +180,7 @@ await notifications.SendAsync(new Notification("tagged"), new SendOptions
 A storage queue message is only a body: no properties, no headers. Anything that has to travel with it — the trace context, headers, a compressed body, a body kept in Blob storage — goes in a small JSON envelope around the body. A message that needs none of these goes out exactly as the serializer wrote it, as in 3.0.
 
 ```json
-{"$azqs-envelope":1,"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","headers":{"tenant":"contoso"},"body":{"OrderId":42}}
+{"$azqs-envelope":1,"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","headers":{"tenant":"contoso"},"body":{"orderId":42}}
 ```
 
 Every client from 3.1 on reads the envelope when it receives, whatever its own settings, so `Body` and `RawBody` are the message you sent and `Headers` holds the headers. The full format is under [Wire format](#wire-format). The catch is older readers: a consumer on 3.0 or earlier, or other code reading the queue (an Azure Function, a script), sees the envelope as the message and fails to deserialize it, or worse, deserializes it into an object with empty fields. So headers, compression, `PropagateTraceContext` and `SendMessageType` are all off until you use them; turn them on only once every reader of the queue is on 3.1 or later.
@@ -250,7 +250,7 @@ While a message is being delivered, everything logged — by the library and by 
 
 ### The message
 
-`QueueMessage<T>` carries `MessageId`, `QueueName`, `PopReceipt`, `DequeueCount`, `InsertedOn`, `ExpiresOn`, `NextVisibleOn`, `Headers`, `IsLastAttempt`, the `RawBody`, the typed `Body`, and `Error` when the body could not be read. `CompleteAsync` deletes it; `AbandonAsync(delay)` makes it visible again now or later; `RenewLockAsync(timeout)` extends the lease; `DeadLetterAsync(reason)` moves it to the poison queue; `Settlement` records which of those happened. Timeouts the service would refuse throw `ArgumentOutOfRangeException` before any call. `IQueueMessage` is the same message without its body's type, for code that serves every message type.
+`QueueMessage<T>` carries `MessageId`, `QueueName`, `PopReceipt`, `DequeueCount`, `InsertedOn`, `ExpiresOn`, `NextVisibleOn`, `Headers`, `IsLastAttempt`, the `RawBody`, the typed `Body`, and `Error` when the body could not be read. `CompleteAsync` deletes it; `AbandonAsync(delay)` makes it visible again now or later; `RenewVisibilityAsync(timeout)` extends the lease; `DeadLetterAsync(reason)` moves it to the poison queue; `Settlement` records which of those happened. Timeouts the service would refuse throw `ArgumentOutOfRangeException` before any call. `IQueueMessage` is the same message without its body's type, for code that serves every message type.
 
 ### Error policy
 
@@ -292,7 +292,45 @@ builder.Services.AddAzureStorageQueueClient(queues =>
 });
 ```
 
-Middleware runs in the order registered. Not calling `next` stops there, and the message counts as handled (completed, with `AutoComplete` on). An exception counts as a handler failure, error policy included. `context.Items` passes things along; `context.Services` is the message's scope.
+Middleware runs in the order registered. Not calling `next` stops there, and the message counts as handled (completed, with `AutoComplete` on). An exception counts as a handler failure, error policy included. `context.Items` passes things along; `context.Services` is the message's scope. Middleware does not run for [batch handlers](#batch-handlers).
+
+### Batch handlers
+
+When the work is cheaper in bulk — inserting rows, calling an API that takes many items — handle a batch per call instead of one message at a time. Each receive takes up to `MaxBatchSize` messages (32, the most one receive can return) and hands them to one handler call in one dependency-injection scope:
+
+```csharp
+public class OrderBatchHandler(OrdersDbContext db) : IQueueBatchHandler<Order>
+{
+    public async ValueTask HandleAsync(IReadOnlyList<QueueMessage<Order>> messages, CancellationToken cancellationToken)
+    {
+        foreach (var message in messages.Where(m => m.Body!.Total < 0))
+            await message.DeadLetterAsync("negative total", cancellationToken);    // settle one yourself
+
+        db.Orders.AddRange(messages.Where(m => !m.IsSettled).Select(m => m.Body!));
+        await db.SaveChangesAsync(cancellationToken);
+        // Return and every message you didn't settle is completed. Throw and none of them are.
+    }
+}
+
+queues.AddClient("orders", builder.Configuration.GetSection("Queues:Orders"))
+      .AddBatchProcessor<Order, OrderBatchHandler>(options =>
+      {
+          options.MaxBatchSize = 20;
+          options.MaxConcurrentBatches = 2;    // two batches in flight, so at most 40 messages held
+      });
+```
+
+A batch is whatever one receive returns, so it is smaller when fewer messages are waiting; the processor never waits to fill one. Everything else works per message, as it does for a single-message processor:
+
+- **Leases.** Every message's lease is renewed from the moment it is received, before any body is read, until it is settled.
+- **Poison messages are left out.** A message whose body can't be read (including one whose body in Blob storage can't be downloaded) or that has been delivered more than `MaxDequeueCount` times is dead-lettered on its own and is not in the list the handler gets. If none are left, the handler isn't called.
+- **Returning** completes every message the handler didn't settle (with `AutoComplete` on, the default).
+- **Throwing** applies the [error policy](#error-policy) to each message the handler hadn't settled — `DeadLetterOn<TException>()` first, then `OnHandlerError`, which is asked once per message — and otherwise abandons each with the `RetryDelay` for its own dequeue count. Messages the handler had already settled stay settled.
+- **Shutdown** is the same: the handler's token is cancelled after `ShutdownDrainTimeout`, and the messages it hadn't settled go straight back to the queue.
+
+`QueueBatchProcessorOptions` has every option in the table above except `MaxConcurrentMessages`, plus `MaxBatchSize` (1 to 32, default 32) and `MaxConcurrentBatches` (default 1). A `RateLimiter` still takes one permit per message, so it can make a batch smaller. The `IConfiguration` overload works the same way as `AddProcessor`'s.
+
+Middleware does not run for batch processors: it is built around one message (`QueueMessageContext.Message`), and running it once per message would not wrap the one call that does the work. Put cross-cutting code in the handler, or in a service it calls. Each batch gets one `Queue.Process` span with `messaging.batch.message_count`, linked to each sender's trace; per-message metrics (processing duration with its outcome, failures, dead-letters, time in queue) are recorded for every message, and `IQueueProcessorController.GetStatus()` counts the messages in flight.
 
 ### Several message types on one queue
 
@@ -355,7 +393,6 @@ builder.Services.AddAzureStorageQueueClient(queues =>
               // Event Grid Base64-encodes what it writes to a storage queue unless the subscription says otherwise
               settings.ClientOptions = new QueueClientOptions { MessageEncoding = QueueMessageEncoding.Base64 };
           })
-          .UseJsonSerializer(new JsonSerializerOptions(JsonSerializerDefaults.Web)) // event data is usually camelCase
           .AddCloudEventProcessor<OrderCreated, OrderCreatedHandler>());
 ```
 
@@ -370,7 +407,7 @@ A subscription that delivers several event types goes to a router, which picks t
 It is the same processor underneath, with the same options and behaviour: return to complete, throw to retry, settle through `message` yourself if you want to. A few things are specific to events:
 
 - **Base64.** Event Grid's storage queue destination Base64-encodes each message by default. Set `MessageEncoding = QueueMessageEncoding.Base64` as above, or turn off Base64 encoding on the event subscription and leave the client as it is.
-- **The data is read with this client's serializer,** so its naming policy applies. An event with no data reaches the handler with `data` null.
+- **The data is read with this client's serializer,** so its naming policy applies. The default reads Event Grid's camelCase data as it is. An event with no data reaches the handler with `data` null.
 - **An event whose data cannot be read as `TData`** is treated like any other unreadable message: moved to the poison queue without calling the handler, with the event id and type in the reason. With `DeadLetterOnDeserializationFailure` off, the handler is called with `data` null and `message.Error` set. A router dead-letters an event of a type nothing is routed for.
 - **Binary data** (`data_base64`, or any data that is not JSON): use `BinaryData` as `TData` to get the bytes as they are.
 - **Event Grid's own schema** (`EventGridEvent`, Event Grid's default schema) is not supported; it needs the `Azure.Messaging.EventGrid` package. Choose the CloudEvents v1.0 schema when you create the subscription.
@@ -433,18 +470,18 @@ queues.AddClient("orders", builder.Configuration.GetSection("Queues:Orders"))
       .UseBlobStorageForLargeMessages();          // container "queue-large-messages" in the queue's own account
 ```
 
-With no arguments it uses the queue's own storage account and credentials: a connection string as is, or `https://myaccount.queue.core.windows.net/...` becomes `https://myaccount.blob.core.windows.net/`. You can also pass a container name, a `BlobContainerClient`, or `sp => ...` to build the container client from your services. The container is created the first time a large message is sent. Pass `thresholdBytes` to send smaller bodies to Blob storage as well. Any other store can plug in by implementing `ILargeMessageStore` and calling `UseLargeMessageStore`.
+With no arguments it uses the queue's own storage account and credentials: a connection string as is, or `https://myaccount.queue.core.windows.net/...` becomes `https://myaccount.blob.core.windows.net/`. You can also pass a container name, a `BlobContainerClient`, or `sp => ...` to build the container client from your services. The container is created the first time a large message is sent; pass `createContainerIfNotExists: false` if it already exists. Pass `thresholdBytes` to send smaller bodies to Blob storage as well. Any other store can plug in by implementing `ILargeMessageStore` and calling `UseLargeMessageStore`.
 
 Things to know before turning it on:
 
 - **Every client that reads the queue needs the same store.** One without it can't read those messages and dead-letters them. Large messages travel in the library's envelope, which only 3.1 and later read.
 - **Some blobs are left behind.** A message that expires on the queue or is cleared from it is never processed, so its blob stays; a send that fails after the upload deletes its blob only on a best-effort basis. Add a [lifecycle management rule](https://learn.microsoft.com/azure/storage/blobs/lifecycle-management-overview) that deletes blobs in the container older than the queue's message time to live plus a margin (for example 9 days for the default 7), longer if you replay dead-lettered messages later.
-- **Permissions:** the identity needs **Storage Blob Data Contributor** on the container or the account. One that can't create containers needs the container created beforehand and `UseLargeMessageStore(new BlobLargeMessageStore(container, createContainerIfNotExists: false))`.
+- **Permissions:** the identity needs **Storage Blob Data Contributor** on the container or the account. One that can't create containers needs the container created beforehand and `createContainerIfNotExists: false`, for example `.UseBlobStorageForLargeMessages("order-bodies", createContainerIfNotExists: false)`.
 - **Messages are untrusted input.** The store only reads and deletes blobs in its own container; a message pointing anywhere else is dead-lettered without a request being made. A SAS token on the container client is never written to the queue.
 
 ## Testing your code
 
-Depend on `IQueueSender` and `IQueueReceiver` and fake them. A received message can be built in a test: `QueueMessage<T>` has a public constructor that takes a `QueueMessageInfo` (whose optional `QueueName`, `Headers` and `IsLastAttempt` set those properties), the body and an `IQueueMessageOperations` — stub the operations to assert that your code completed or abandoned the message.
+Depend on `IQueueSender` and `IQueueReceiver` and fake them. What they return are plain records, so a fake builds them directly: `new SendResult(...)` from `SendAsync`, `new QueueStatus(...)` from `GetPropertiesAsync`. A received message can be built in a test: `QueueMessage<T>` has a public constructor that takes a `QueueMessageInfo` (whose optional `QueueName`, `Headers` and `IsLastAttempt` set those properties), the body and an `IQueueMessageOperations` — stub the operations to assert that your code completed or abandoned the message.
 
 To test a handler end to end — send, processor, handler, then complete, retry or dead-letter — swap the real queues for in-memory ones. No storage account, emulator or connection string is needed, even with `ValidateOnStart()`; each client still needs a `QueueName`, or an `EndpointUri` that names the queue, checked by the same rules as in production. The in-memory queues run the same queue code as the real ones, so messages go through each client's serializer, envelope and size check, emit the same spans and metrics, and follow the service's rules: a received message is hidden for its visibility timeout and its dequeue count goes up, an abandoned one stays hidden for its retry delay, and settling with an outdated pop receipt throws a `RequestFailedException` (404). Time comes from the registered `TimeProvider`, so a `FakeTimeProvider` drives polling, retries and expiry without real waits. Clients naming the same queue share it.
 
@@ -499,7 +536,7 @@ builder.Services.AddOpenTelemetry()
     .WithMetrics(m => m.AddAzureStorageQueueMetrics());
 ```
 
-The processor emits a `Queue.Process` span (kind: consumer) per message, tagged with the queue name, message id, dequeue count and outcome, with events when the message is renewed, completed, abandoned or dead-lettered. `Queue.Read` (client) and `Queue.Send` (producer) spans for individual receives and sends are off by default because they are noisy; turn them on with `ConfigureQueueServiceTelemetry`. A span whose operation failed is marked with an error status and `error.type`. Spans also carry the [OpenTelemetry messaging attributes](https://opentelemetry.io/docs/specs/semconv/messaging/) — `messaging.system` (`azure.storage.queue`), `messaging.destination.name`, `messaging.operation.type` / `.name`, `messaging.message.id`, `messaging.batch.message_count`, `server.address` / `server.port` — so App Insights and Grafana's messaging views recognise them.
+The processor emits a `Queue.Process` span (kind: consumer) per message (per batch for a [batch handler](#batch-handlers)), tagged with the queue name, message id, dequeue count and outcome, with events when the message is renewed, completed, abandoned or dead-lettered. `Queue.Read` (client) and `Queue.Send` (producer) spans for individual receives and sends are off by default because they are noisy; turn them on with `ConfigureQueueServiceTelemetry`. A span whose operation failed is marked with an error status and `error.type`. Spans also carry the [OpenTelemetry messaging attributes](https://opentelemetry.io/docs/specs/semconv/messaging/) — `messaging.system` (`azure.storage.queue`), `messaging.destination.name`, `messaging.operation.type` / `.name`, `messaging.message.id`, `messaging.batch.message_count`, `server.address` / `server.port` — so App Insights and Grafana's messaging views recognise them.
 
 **Metrics,** all tagged with `queue.name`:
 
@@ -510,7 +547,7 @@ The processor emits a `Queue.Process` span (kind: consumer) per message, tagged 
 | `queue_message_size_bytes` | Histogram of what the serializer wrote, before any envelope. Buckets up to 64 KiB. |
 | `queue_message_time_in_queue_seconds` | Histogram: how long a message waited before a processor started on it, measured from when it was first sent (retries included). The best "are we keeping up" signal, and it costs nothing. |
 | `queue_receive_requests_total` | Receive calls, tagged `queue.receive_result`: `message`, `empty` or `error`. Every one is a billable transaction, empty polls included. |
-| `queue_processor_active_handlers` | Handlers running now; compare with `MaxConcurrentMessages` for saturation. |
+| `queue_processor_active_handlers` | Messages being handled now (for a batch processor, the messages in its running batches); compare with `MaxConcurrentMessages`, or `MaxConcurrentBatches` × `MaxBatchSize`, for saturation. |
 | `queue_processor_oldest_handler_age_seconds` | Gauge: the longest-running handler. A value that keeps growing is a hung handler. |
 | `queue_lease_renewals_total`, `queue_lease_renewal_failures_total` | Renewals, and renewals that failed (that message will be redelivered). |
 | `queue_messages_dead_lettered_total` | Dead-lettered messages, tagged `queue.dead_letter_reason`. |
@@ -558,14 +595,23 @@ Lambda handlers are fine: their parameters are read from the delegate itself.
 
 ## Upgrading from 3.0 to 3.1
 
-3.1 adds to the API without removing anything. Recompile and these are the behaviour changes to know about:
+3.1 has five breaking changes from 3.0. They were planned for 4.0, but 3.0 had been out only briefly and had almost no users, so they were made now rather than kept waiting for a major version. Each one is a small change to your code:
 
-- **The default serializer reads JSON property names case-insensitively.** A camelCase message used to fill none of a PascalCase type's properties, and was completed as if it were fine; now it fills them. Pass your own `JsonSerializerOptions` to keep the old strictness. Output is unchanged.
+- **`SendAsync` returns a `SendResult` instead of the Azure SDK's `SendReceipt`.** It carries the same information. `MessageId` and `PopReceipt` keep their names; `InsertionTime` is now `InsertedOn`, `ExpirationTime` is `ExpiresOn`, and `TimeNextVisible` is `NextVisibleOn`. A fake `IQueueSender` returns `new SendResult(...)` instead of building a receipt with `QueuesModelFactory`.
+- **`GetPropertiesAsync` returns a `QueueStatus` instead of the SDK's `QueueProperties`.** `ApproximateMessagesCount` and `Metadata` keep their names; `Metadata` is now read-only. A fake returns `new QueueStatus(count, metadata)`.
+- **`RenewLockAsync` is now `RenewVisibilityAsync`**, on `QueueMessage<T>` and `IQueueMessage`, to match the processor's `RenewVisibility` option. Rename the call.
+- **`QueueClientSettingsBuilder` is now `QueueServiceBuilder`:** the type of `queues` in `AddAzureStorageQueueClient(queues => ...)`. Only code that names the type, such as a helper that takes an `Action<QueueClientSettingsBuilder>`, needs the new name.
+- **The default serializer writes camelCase JSON:** `{"orderId":42}` where 3.0 wrote `{"OrderId":42}`. It now uses System.Text.Json's web defaults (`JsonSerializerDefaults.Web`), which also read property names case-insensitively, so messages from 3.0 senders still arrive intact, and a camelCase message no longer fills none of a PascalCase type's properties and gets completed as if it were fine. Numbers written as strings (`"42"`) are read too. What changes is what other readers of the queue see: an Azure Function, script or service that expects PascalCase names gets empty fields. To keep writing PascalCase, give the client `UseJsonSerializer(new JsonSerializerOptions { PropertyNameCaseInsensitive = true })`, or pass those options as `serializerOptions` to `AddAzureStorageQueueClient` for every client. Options you pass are used exactly as given.
+
+Recompile, and these are the behaviour changes to know about:
+
+- **New: batch handlers.** `AddBatchProcessor<TMessage, THandler>()` with an `IQueueBatchHandler<TMessage>` hands a handler up to 32 messages per call; see [Batch handlers](#batch-handlers). The options every processor shares moved to a new base class, `QueueProcessorOptionsBase`, which `QueueProcessorOptions` and the new `QueueBatchProcessorOptions` derive from. Code that sets the options doesn't change.
+
 - **Poison messages no longer expire after 7 days.** They used to take the service's default time to live and could disappear unseen; now they stay until deleted or replayed, or for `PoisonTimeToLive`.
 - **A poison message records why it was dead-lettered**, so the copy on the poison queue is now an envelope around the original body. A 3.1 reader (and `IDeadLetterQueue`) reads it; a tool that read poison messages as plain JSON sees the envelope. Moving one back by hand still works for 3.1 receivers, but `ReplayAsync` is the clean way: it strips the record.
 - **One receive loop per processor** instead of one per handler slot. An idle processor makes one request per interval rather than `MaxConcurrentMessages` of them, and a burst after a quiet spell is picked up at the next poll instead of whenever each sleeping worker woke.
 - **Quieter logs.** Healthy messages log at Debug, not Information. A failed poll is logged once, not twice. A handler failure is a warning while retries remain and an error on the last attempt.
-- **Arguments are checked before calling the service:** `ReceiveAsync`, `AbandonAsync`, `RenewLockAsync` and `SendOptions` throw `ArgumentOutOfRangeException` where they used to get a 400 back, and a send over 64 KiB throws `QueueMessageTooLargeException` instead of a 413.
+- **Arguments are checked before calling the service:** `ReceiveAsync`, `AbandonAsync`, `RenewVisibilityAsync` and `SendOptions` throw `ArgumentOutOfRangeException` where they used to get a 400 back, and a send over 64 KiB throws `QueueMessageTooLargeException` instead of a 413.
 - **In-memory queues behave more like the service:** they enforce the size limit and emit spans and metrics.
 - **`IStorageQueue`, `IQueueSender` and `IQueueReceiver` are always registered,** with or without a default client, so injecting one without a default client fails with a message naming the registered clients. Code that checked `GetService<IStorageQueue>() is null` to detect a default client should check its configuration instead.
 - **The processing-duration and size histograms have explicit buckets** (seconds and bytes) and units. Dashboards built on the old default buckets will see the bucket boundaries change once.

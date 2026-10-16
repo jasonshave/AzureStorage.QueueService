@@ -90,10 +90,10 @@ public class QueueProcessorTests(ITestOutputHelper output)
         }
 
         public ValueTask<IReadOnlyList<PeekedQueueMessage<T>>> PeekAsync<T>(int maxMessages = 1, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public ValueTask<SendReceipt> SendAsync<T>(T message, SendOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public ValueTask<SendResult> SendAsync<T>(T message, SendOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public ValueTask CreateIfNotExistsAsync(IDictionary<string, string>? metadata = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public ValueTask ClearAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public ValueTask<QueueProperties> GetPropertiesAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public ValueTask<QueueStatus> GetPropertiesAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     /// <summary>Records every settle operation and raises a signal for each, so tests await outcomes instead of sleeping.</summary>
@@ -743,8 +743,8 @@ public class QueueProcessorTests(ITestOutputHelper output)
             services.AddSingleton(Calls);
             services.AddAzureStorageQueueClient(x =>
                 x.AddClient("events", s => { s.ConnectionString = "UseDevelopmentStorage=true"; s.QueueName = "events"; })
-                 // Event Grid writes camelCase data, so this also proves the data is read with the client's serializer.
-                 .UseJsonSerializer(new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                 // Event Grid writes camelCase data, which System.Text.Json's own defaults would not read, so this also proves
+                 // the data is read with the client's serializer.
                  .AddCloudEventProcessor<OrderCreated, CloudEventRecorder>(configure));
             _provider = services.BuildServiceProvider();
             Processor = (IHostedLifecycleService)_provider.GetServices<IHostedService>().Single();
@@ -875,6 +875,25 @@ public class QueueProcessorTests(ITestOutputHelper output)
         await h.Queue.WaitForReceivesAsync(1);
 
         h.Queue.Receives[0].Take.Should().Be(2, "five handlers are free but only two permits are");
+    }
+
+    [Fact(DisplayName = "With a rate limiter that has a permit for every free handler, messages are still received and handled")]
+    public async Task Rate_Limiter_With_Permits_To_Spare()
+    {
+        using var limiter = new System.Threading.RateLimiting.TokenBucketRateLimiter(new System.Threading.RateLimiting.TokenBucketRateLimiterOptions
+        {
+            TokenLimit = 10,
+            TokensPerPeriod = 1,
+            ReplenishmentPeriod = TimeSpan.FromHours(1),
+            AutoReplenishment = false,
+        });
+        await using var h = new Harness(output, o => o.RateLimiter = limiter);
+        h.Queue.Then(h.Message("1"));
+
+        await h.StartAsync();
+        await h.Ops.WaitForAsync("delete");
+
+        h.Logs.Entries.Should().NotContain(e => e.Level >= LogLevel.Error, "no slot is left to give back, and that is not a failed receive");
     }
 
     [Fact(DisplayName = "MaxRenewalDuration stops renewing a handler's lease and says so, so a hung handler cannot hide its message for ever")]

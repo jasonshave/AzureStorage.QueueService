@@ -1,4 +1,3 @@
-using Azure.Storage.Queues.Models;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -30,10 +29,10 @@ public class QueueProcessorHostTests
         }
 
         public ValueTask<IReadOnlyList<PeekedQueueMessage<T>>> PeekAsync<T>(int maxMessages = 1, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public ValueTask<SendReceipt> SendAsync<T>(T message, SendOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public ValueTask<SendResult> SendAsync<T>(T message, SendOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public ValueTask CreateIfNotExistsAsync(IDictionary<string, string>? metadata = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public ValueTask ClearAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public ValueTask<QueueProperties> GetPropertiesAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public ValueTask<QueueStatus> GetPropertiesAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private sealed class NoopHandler : IQueueMessageHandler<TestObject>

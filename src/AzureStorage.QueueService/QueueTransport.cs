@@ -22,7 +22,7 @@ internal interface IQueueTransport
     ValueTask CreateIfNotExistsAsync(IDictionary<string, string>? metadata, CancellationToken cancellationToken);
 
     // timeToLive is in the service's terms: -1 second for never.
-    ValueTask<SendReceipt> SendAsync(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive, CancellationToken cancellationToken);
+    ValueTask<SendResult> SendAsync(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive, CancellationToken cancellationToken);
 
     // visibilityTimeout: null for the service's default of 30 seconds.
     ValueTask<IReadOnlyList<TransportMessage>> ReceiveAsync(int maxMessages, TimeSpan? visibilityTimeout, CancellationToken cancellationToken);
@@ -35,7 +35,7 @@ internal interface IQueueTransport
 
     ValueTask ClearAsync(CancellationToken cancellationToken);
 
-    ValueTask<QueueProperties> GetPropertiesAsync(CancellationToken cancellationToken);
+    ValueTask<QueueStatus> GetPropertiesAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -63,8 +63,11 @@ internal sealed class SdkQueueTransport : IQueueTransport
     public async ValueTask CreateIfNotExistsAsync(IDictionary<string, string>? metadata, CancellationToken cancellationToken) =>
         await _client.CreateIfNotExistsAsync(metadata, cancellationToken);
 
-    public async ValueTask<SendReceipt> SendAsync(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive, CancellationToken cancellationToken) =>
-        await _client.SendMessageAsync(body, visibilityTimeout, timeToLive, cancellationToken);
+    public async ValueTask<SendResult> SendAsync(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive, CancellationToken cancellationToken)
+    {
+        SendReceipt receipt = await _client.SendMessageAsync(body, visibilityTimeout, timeToLive, cancellationToken);
+        return new SendResult(receipt.MessageId, receipt.PopReceipt, receipt.InsertionTime, receipt.ExpirationTime, receipt.TimeNextVisible);
+    }
 
     public async ValueTask<IReadOnlyList<TransportMessage>> ReceiveAsync(int maxMessages, TimeSpan? visibilityTimeout, CancellationToken cancellationToken)
     {
@@ -132,8 +135,11 @@ internal sealed class SdkQueueTransport : IQueueTransport
 
     public async ValueTask ClearAsync(CancellationToken cancellationToken) => await _client.ClearMessagesAsync(cancellationToken);
 
-    public async ValueTask<QueueProperties> GetPropertiesAsync(CancellationToken cancellationToken) =>
-        (await _client.GetPropertiesAsync(cancellationToken)).Value;
+    public async ValueTask<QueueStatus> GetPropertiesAsync(CancellationToken cancellationToken)
+    {
+        QueueProperties properties = await _client.GetPropertiesAsync(cancellationToken);
+        return new QueueStatus(properties.ApproximateMessagesCount, new Dictionary<string, string>(properties.Metadata ?? new Dictionary<string, string>()));
+    }
 
     private QueueMessageInfo Info(SdkQueueMessage m) =>
         new(m.MessageId, m.PopReceipt, m.DequeueCount, m.InsertedOn, m.ExpiresOn, m.NextVisibleOn) { QueueName = _client.Name };
@@ -168,7 +174,7 @@ internal sealed class InMemoryQueueTransport : IQueueTransport
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask<SendReceipt> SendAsync(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive, CancellationToken cancellationToken)
+    public ValueTask<SendResult> SendAsync(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         return new(_queue.Send(body, visibilityTimeout, timeToLive));
@@ -212,7 +218,7 @@ internal sealed class InMemoryQueueTransport : IQueueTransport
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask<QueueProperties> GetPropertiesAsync(CancellationToken cancellationToken)
+    public ValueTask<QueueStatus> GetPropertiesAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         return new(_queue.GetProperties());

@@ -28,7 +28,8 @@ namespace AzureStorage.QueueService;
 /// margin (and long enough to replay dead-lettered messages).
 /// </para>
 /// <para>
-/// The identity needs the <c>Storage Blob Data Contributor</c> role on the container or the account.
+/// The identity needs the <c>Storage Blob Data Contributor</c> role on the container or the account. One that is not
+/// allowed to create containers needs the container created ahead of time and <c>createContainerIfNotExists: false</c>.
 /// </para>
 /// </remarks>
 public static class BlobStorageQueueClientBuilderExtensions
@@ -38,7 +39,7 @@ public static class BlobStorageQueueClientBuilderExtensions
 
     /// <summary>
     /// Keeps bodies too big for a queue message as blobs in <paramref name="container"/>, which is created on the first
-    /// large send if it does not exist.
+    /// large send if it does not exist (unless <paramref name="createContainerIfNotExists"/> is false).
     /// </summary>
     /// <param name="builder">The client to attach the store to.</param>
     /// <param name="container">The container to keep bodies in, with the credential to reach it.</param>
@@ -46,19 +47,24 @@ public static class BlobStorageQueueClientBuilderExtensions
     /// Also send bodies of at least this many bytes to Blob storage even when they would fit on the queue. Null (the
     /// default) sends only what would otherwise be over the 64 KiB limit.
     /// </param>
+    /// <param name="createContainerIfNotExists">
+    /// True (the default) creates the container on the first large send if it does not exist. Pass false when the
+    /// container is created ahead of time and the identity is not allowed to create containers.
+    /// </param>
     /// <returns>The same builder, for chaining.</returns>
-    public static IQueueClientBuilder UseBlobStorageForLargeMessages(this IQueueClientBuilder builder, BlobContainerClient container, int? thresholdBytes = null)
+    public static IQueueClientBuilder UseBlobStorageForLargeMessages(this IQueueClientBuilder builder, BlobContainerClient container, int? thresholdBytes = null, bool createContainerIfNotExists = true)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(container);
-        return builder.UseBlobStorageForLargeMessages(_ => container, thresholdBytes);
+        return builder.UseBlobStorageForLargeMessages(_ => container, thresholdBytes, createContainerIfNotExists);
     }
 
     /// <summary>
     /// Keeps bodies too big for a queue message as blobs in the container <paramref name="createContainer"/> returns. It
     /// is called once, from the application's services, the first time the client is used, so the container client can
     /// come from dependency injection (for example one registered with <c>Microsoft.Extensions.Azure</c>). The container
-    /// is created on the first large send if it does not exist.
+    /// is created on the first large send if it does not exist (unless <paramref name="createContainerIfNotExists"/> is
+    /// false).
     /// </summary>
     /// <param name="builder">The client to attach the store to.</param>
     /// <param name="createContainer">Returns the container to keep bodies in, with the credential to reach it.</param>
@@ -66,8 +72,12 @@ public static class BlobStorageQueueClientBuilderExtensions
     /// Also send bodies of at least this many bytes to Blob storage even when they would fit on the queue. Null (the
     /// default) sends only what would otherwise be over the 64 KiB limit.
     /// </param>
+    /// <param name="createContainerIfNotExists">
+    /// True (the default) creates the container on the first large send if it does not exist. Pass false when the
+    /// container is created ahead of time and the identity is not allowed to create containers.
+    /// </param>
     /// <returns>The same builder, for chaining.</returns>
-    public static IQueueClientBuilder UseBlobStorageForLargeMessages(this IQueueClientBuilder builder, Func<IServiceProvider, BlobContainerClient> createContainer, int? thresholdBytes = null)
+    public static IQueueClientBuilder UseBlobStorageForLargeMessages(this IQueueClientBuilder builder, Func<IServiceProvider, BlobContainerClient> createContainer, int? thresholdBytes = null, bool createContainerIfNotExists = true)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(createContainer);
@@ -79,7 +89,7 @@ public static class BlobStorageQueueClientBuilderExtensions
             {
                 var container = createContainer(provider)
                     ?? throw new InvalidOperationException($"{Describe(clientName)} keeps large messages in Blob storage, but the delegate passed to UseBlobStorageForLargeMessages returned no container.");
-                return new BlobLargeMessageStore(container, createContainerIfNotExists: true, provider.GetService<TimeProvider>());
+                return new BlobLargeMessageStore(container, createContainerIfNotExists, provider.GetService<TimeProvider>());
             },
             thresholdBytes);
     }
@@ -87,7 +97,7 @@ public static class BlobStorageQueueClientBuilderExtensions
     /// <summary>
     /// Keeps bodies too big for a queue message as blobs in the container <paramref name="containerName"/>, in the same
     /// storage account as the queue and reached with the same credentials. The container is created on the first large
-    /// send if it does not exist.
+    /// send if it does not exist (unless <paramref name="createContainerIfNotExists"/> is false).
     /// </summary>
     /// <remarks>
     /// The Blob endpoint is worked out from the client's settings the first time the client is used: a connection
@@ -108,9 +118,13 @@ public static class BlobStorageQueueClientBuilderExtensions
     /// Also send bodies of at least this many bytes to Blob storage even when they would fit on the queue. Null (the
     /// default) sends only what would otherwise be over the 64 KiB limit.
     /// </param>
+    /// <param name="createContainerIfNotExists">
+    /// True (the default) creates the container on the first large send if it does not exist. Pass false when the
+    /// container is created ahead of time and the identity is not allowed to create containers.
+    /// </param>
     /// <returns>The same builder, for chaining.</returns>
     /// <exception cref="ArgumentException"><paramref name="containerName"/> is not a valid container name.</exception>
-    public static IQueueClientBuilder UseBlobStorageForLargeMessages(this IQueueClientBuilder builder, string containerName = DefaultContainerName, int? thresholdBytes = null)
+    public static IQueueClientBuilder UseBlobStorageForLargeMessages(this IQueueClientBuilder builder, string containerName = DefaultContainerName, int? thresholdBytes = null, bool createContainerIfNotExists = true)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(containerName);
@@ -123,7 +137,8 @@ public static class BlobStorageQueueClientBuilderExtensions
                 var settings = provider.GetRequiredService<IOptionsMonitor<QueueClientSettings>>().Get(clientName);
                 return BlobEndpoints.ServiceClientFor(settings, Describe(clientName)).GetBlobContainerClient(containerName);
             },
-            thresholdBytes);
+            thresholdBytes,
+            createContainerIfNotExists);
     }
 
     private static string Describe(string clientName) =>

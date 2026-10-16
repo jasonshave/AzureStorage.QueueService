@@ -99,7 +99,7 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IDe
     // Send
     // ------------------------------------------------------------------------------------------------------------
 
-    public async ValueTask<SendReceipt> SendAsync<T>(T message, SendOptions? options = null, CancellationToken cancellationToken = default)
+    public async ValueTask<SendResult> SendAsync<T>(T message, SendOptions? options = null, CancellationToken cancellationToken = default)
     {
         ValidateSendOptions(options);
 
@@ -115,7 +115,7 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IDe
             // The send span when there is one, as the conventions expect of a producer; otherwise whatever the caller
             // is doing (an HTTP request, say). With neither there is no trace to continue and the message goes out plain.
             var encoded = await Codec.EncodeAsync(QueueName, _transport.Base64Encoded, message, options, activity ?? Activity.Current, cancellationToken);
-            SendReceipt receipt;
+            SendResult receipt;
             try
             {
                 receipt = await _transport.SendAsync(encoded.Wire, options?.VisibilityTimeout, ServiceTimeToLive(options?.TimeToLive), cancellationToken);
@@ -299,7 +299,7 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IDe
         await _transport.ClearAsync(cancellationToken);
     }
 
-    public async ValueTask<QueueProperties> GetPropertiesAsync(CancellationToken cancellationToken = default)
+    public async ValueTask<QueueStatus> GetPropertiesAsync(CancellationToken cancellationToken = default)
     {
         await EnsureQueueExistsAsync(cancellationToken);
         return await _transport.GetPropertiesAsync(cancellationToken);

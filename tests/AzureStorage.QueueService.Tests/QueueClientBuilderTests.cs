@@ -43,12 +43,13 @@ public class QueueClientBuilderTests
         var services = new ServiceCollection();
         services.AddAzureStorageQueueClient(x =>
             x.AddClient("orders", y => y.ConnectionString = "UseDevelopmentStorage=true")
-             .UseJsonSerializer(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+             .UseJsonSerializer(new JsonSerializerOptions()));
 
         var settings = services.BuildServiceProvider().GetRequiredService<IOptionsMonitor<QueueClientSettings>>().Get("orders");
 
+        // The options are used as given: System.Text.Json's plain defaults write PascalCase, unlike the library's default.
         settings.Serializer.Should().NotBeNull();
-        settings.Serializer!.Serialize(new TestObject { Property1 = "v" }).ToString().Should().Contain("\"property1\"");
+        settings.Serializer!.Serialize(new TestObject { Property1 = "v" }).ToString().Should().Contain("\"Property1\"");
     }
 
     [Fact]

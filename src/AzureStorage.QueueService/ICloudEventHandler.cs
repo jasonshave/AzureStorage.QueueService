@@ -12,7 +12,7 @@ namespace AzureStorage.QueueService;
 /// Everything <see cref="IQueueMessageHandler{TMessage}"/> says about settlement, retries and cancellation applies:
 /// return and the message is completed, throw and it is retried, or settle it yourself through the message. An
 /// event with no data arrives with <c>data</c> null. With
-/// <see cref="QueueProcessorOptions.DeadLetterOnDeserializationFailure"/> off, an envelope or data that could not be
+/// <see cref="QueueProcessorOptionsBase.DeadLetterOnDeserializationFailure"/> off, an envelope or data that could not be
 /// read arrives with <c>data</c> null and <see cref="QueueMessage{T}.Error"/> set.
 /// </remarks>
 /// <typeparam name="TData">

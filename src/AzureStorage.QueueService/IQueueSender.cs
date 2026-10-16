@@ -1,5 +1,3 @@
-using Azure.Storage.Queues.Models;
-
 namespace AzureStorage.QueueService;
 
 /// <summary>
@@ -8,11 +6,23 @@ namespace AzureStorage.QueueService;
 public interface IQueueSender : INamedQueue
 {
     /// <summary>Serializes <paramref name="message"/> and puts it on the queue.</summary>
+    /// <returns>What the service said about the message it stored: its id, receipt and times.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="options"/> asks for a delay or time to live the service would reject.</exception>
     /// <exception cref="QueueMessageTooLargeException">The message would be over the service's 64 KiB limit and the client has no large message store.</exception>
     /// <exception cref="Azure.RequestFailedException">The service rejected the send.</exception>
-    ValueTask<SendReceipt> SendAsync<T>(T message, SendOptions? options = null, CancellationToken cancellationToken = default);
+    ValueTask<SendResult> SendAsync<T>(T message, SendOptions? options = null, CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// The message a send put on the queue. A plain record, so a fake <see cref="IQueueSender"/> can return one with
+/// <c>new SendResult(...)</c>.
+/// </summary>
+/// <param name="MessageId">The id the service gave the message.</param>
+/// <param name="PopReceipt">The receipt that can delete or update the message until someone receives it.</param>
+/// <param name="InsertedOn">When the message was put on the queue.</param>
+/// <param name="ExpiresOn">When the service will discard the message if nobody deletes it first.</param>
+/// <param name="NextVisibleOn">When the message can first be received: now, or later when the send asked for a delay.</param>
+public sealed record SendResult(string MessageId, string PopReceipt, DateTimeOffset InsertedOn, DateTimeOffset ExpiresOn, DateTimeOffset NextVisibleOn);
 
 /// <summary>How one message is sent.</summary>
 /// <param name="VisibilityTimeout">

@@ -95,7 +95,7 @@ public class ProcessorFeatureTests(ITestOutputHelper output)
         }
     }
 
-    private IHost Build(Action<QueueClientSettingsBuilder> configure, Action<IServiceCollection>? services = null)
+    private IHost Build(Action<QueueServiceBuilder> configure, Action<IServiceCollection>? services = null)
     {
         var builder = Host.CreateEmptyApplicationBuilder(new HostApplicationBuilderSettings());
         builder.Logging.AddProvider(new XUnitLoggerProvider(output));

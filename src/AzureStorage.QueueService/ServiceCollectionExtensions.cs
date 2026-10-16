@@ -18,9 +18,9 @@ public static class ServiceCollectionExtensions
     /// <param name="serializerOptions">
     /// JSON options shared by every client that does not set its own serializer with <c>UseSerializer</c> /
     /// <c>UseJsonSerializer</c>. When omitted, an <see cref="IQueueMessageSerializer"/> you registered yourself is used if
-    /// present, and otherwise System.Text.Json's defaults with property names read case-insensitively.
+    /// present, and otherwise System.Text.Json's web defaults: property names written in camelCase and read case-insensitively.
     /// </param>
-    public static IServiceCollection AddAzureStorageQueueClient(this IServiceCollection services, Action<QueueClientSettingsBuilder> configure, JsonSerializerOptions? serializerOptions = null)
+    public static IServiceCollection AddAzureStorageQueueClient(this IServiceCollection services, Action<QueueServiceBuilder> configure, JsonSerializerOptions? serializerOptions = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configure);
@@ -53,7 +53,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IQueueReceiver>(static provider => provider.GetRequiredService<IStorageQueue>());
         services.TryAddSingleton<IDeadLetterQueue>(static provider => provider.GetRequiredService<IQueueClientFactory>().GetDeadLetterQueue());
 
-        configure(new QueueClientSettingsBuilder(services, registry));
+        configure(new QueueServiceBuilder(services, registry));
 
         return services;
     }
@@ -83,7 +83,7 @@ public static class ServiceCollectionExtensions
     /// says otherwise) and peek it.
     /// </para>
     /// <para>
-    /// Connection details are neither needed nor checked, here or by <see cref="QueueClientSettingsBuilder.ValidateOnStart"/>.
+    /// Connection details are neither needed nor checked, here or by <see cref="QueueServiceBuilder.ValidateOnStart"/>.
     /// Each client still needs a queue name, and its poison queue name is validated as usual.
     /// </para>
     /// </remarks>

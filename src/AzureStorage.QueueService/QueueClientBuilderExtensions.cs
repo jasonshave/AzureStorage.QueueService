@@ -48,8 +48,8 @@ public static class QueueClientBuilderExtensions
 
     /// <summary>
     /// Serializes this client's messages with System.Text.Json using source-generated metadata, for example
-    /// <c>UseJsonSerializer(MyJsonContext.Default)</c>, which is what a trimmed or native AOT application needs. Property
-    /// names are read case-insensitively, as with the default serializer.
+    /// <c>UseJsonSerializer(MyJsonContext.Default)</c>, which is what a trimmed or native AOT application needs. As with
+    /// the default serializer, property names are written in camelCase and read case-insensitively.
     /// </summary>
     public static IQueueClientBuilder UseJsonSerializer(this IQueueClientBuilder builder, System.Text.Json.Serialization.Metadata.IJsonTypeInfoResolver typeInfoResolver)
     {
@@ -159,6 +159,60 @@ public static class QueueClientBuilderExtensions
     }
 
     /// <summary>
+    /// Runs a hosted batch processor for this client: each receive takes up to
+    /// <see cref="QueueBatchProcessorOptions.MaxBatchSize"/> messages of type <typeparamref name="TMessage"/> and hands
+    /// them to one call of a new <typeparamref name="THandler"/>, resolved from the batch's own dependency-injection
+    /// scope; up to <see cref="QueueBatchProcessorOptions.MaxConcurrentBatches"/> batches run at once. Every message keeps
+    /// its own lease renewal, poison checks, retries and settlement, exactly as with
+    /// <see cref="AddProcessor{TMessage, THandler}(IQueueClientBuilder, Action{QueueProcessorOptions}?)"/>; see
+    /// <see cref="IQueueBatchHandler{TMessage}"/> for what returning and throwing mean. Middleware does not run for
+    /// batches. Registering the same handler on the same client again adds to its options; it does not start a second processor.
+    /// </summary>
+    public static IQueueClientBuilder AddBatchProcessor<TMessage, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(this IQueueClientBuilder builder, Action<QueueBatchProcessorOptions>? configure = null)
+        where THandler : class, IQueueBatchHandler<TMessage>
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+
+        builder.Services.TryAddScoped<THandler>();
+        var clientName = builder.Name;
+        // Its own options name, so a class that is both a message handler and a batch handler can be registered both ways.
+        var optionsName = $"{builder.Name}|batch:{typeof(THandler).FullName}";
+        builder.Services.AddOptions<QueueBatchProcessorOptions>(optionsName).Configure(configure ?? (_ => { }));
+
+        if (!ServiceCollectionExtensions.GetOrAddRegistry(builder.Services).AddProcessor(optionsName)) return builder;
+
+        builder.Services.AddSingleton<IHostedService>(provider => new QueueBatchProcessor<TMessage, THandler>(
+            clientName,
+            optionsName,
+            provider.GetRequiredService<IQueueClientFactory>(),
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<IOptionsFactory<QueueBatchProcessorOptions>>(),
+            provider.GetRequiredService<ILoggerFactory>(),
+            provider.GetRequiredService<QueueServiceMetrics>(),
+            provider.GetService<TimeProvider>() ?? TimeProvider.System,
+            provider.GetService<IHostApplicationLifetime>(),
+            provider.GetService<QueueProcessorController>()));
+
+        return builder;
+    }
+
+    /// <summary>
+    /// As <see cref="AddBatchProcessor{TMessage, THandler}(IQueueClientBuilder, Action{QueueBatchProcessorOptions}?)"/>,
+    /// with the options bound from <paramref name="configuration"/> (for example
+    /// <c>configuration.GetSection("Queues:Orders:BatchProcessor")</c>) and then <paramref name="configure"/>.
+    /// </summary>
+    public static IQueueClientBuilder AddBatchProcessor<TMessage, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(this IQueueClientBuilder builder, IConfiguration configuration, Action<QueueBatchProcessorOptions>? configure = null)
+        where THandler : class, IQueueBatchHandler<TMessage>
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return builder.AddBatchProcessor<TMessage, THandler>(options =>
+        {
+            BindBatchProcessorOptions(configuration, options);
+            configure?.Invoke(options);
+        });
+    }
+
+    /// <summary>
     /// Runs a hosted processor whose handler is a delegate, with its parameters filled per message: a parameter of type
     /// <typeparamref name="TMessage"/> gets the body; <see cref="QueueMessage{T}"/> or <see cref="IQueueMessage"/> the
     /// message; <see cref="CancellationToken"/> the shutdown token; anything else is resolved from the message's
@@ -190,7 +244,7 @@ public static class QueueClientBuilderExtensions
     /// resolved from its own dependency-injection scope. Everything else is <see cref="AddProcessor{TMessage, THandler}(IQueueClientBuilder, Action{QueueProcessorOptions}?)"/>:
     /// the same options, settlement, retries, poison queue, lease renewal and shutdown. An event whose data cannot be
     /// read as <typeparamref name="TData"/> counts as an unreadable body (see
-    /// <see cref="QueueProcessorOptions.DeadLetterOnDeserializationFailure"/>).
+    /// <see cref="QueueProcessorOptionsBase.DeadLetterOnDeserializationFailure"/>).
     /// </summary>
     public static IQueueClientBuilder AddCloudEventProcessor<TData, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(this IQueueClientBuilder builder, Action<QueueProcessorOptions>? configure = null)
         where THandler : class, ICloudEventHandler<TData>
@@ -262,6 +316,8 @@ public static class QueueClientBuilderExtensions
     // Source-generated, so it is trim- and AOT-safe. The generator skips what configuration cannot hold (the callbacks
     // and RateLimiter), as reflection binding would.
     private static void BindProcessorOptions(IConfiguration configuration, QueueProcessorOptions options) => configuration.Bind(options);
+
+    private static void BindBatchProcessorOptions(IConfiguration configuration, QueueBatchProcessorOptions options) => configuration.Bind(options);
 
     private static string Describe(IQueueClientBuilder builder) => builder.Name.Length == 0 ? "The default queue client" : $"Queue client '{builder.Name}'";
 

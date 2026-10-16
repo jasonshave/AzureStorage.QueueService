@@ -53,7 +53,7 @@ internal sealed class InMemoryQueue
     /// Takes the time to live as the service does: -1 second for never. The client converts .NET's -1 ms sentinel first
     /// (<see cref="StorageQueue.ServiceTimeToLive"/>), as the real client does before calling the service.
     /// </summary>
-    public SendReceipt Send(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive)
+    public SendResult Send(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive)
     {
         var visibility = WholeSeconds(visibilityTimeout ?? TimeSpan.Zero);
         var ttl = WholeSeconds(timeToLive ?? DefaultTimeToLive);
@@ -71,7 +71,7 @@ internal sealed class InMemoryQueue
                 NextVisibleOn = now + visibility,
             };
             _messages.Add(entry);
-            return QueuesModelFactory.SendReceipt(entry.MessageId, entry.InsertedOn, entry.ExpiresOn, entry.PopReceipt, entry.NextVisibleOn);
+            return new SendResult(entry.MessageId, entry.PopReceipt, entry.InsertedOn, entry.ExpiresOn, entry.NextVisibleOn);
         }
     }
 
@@ -145,13 +145,13 @@ internal sealed class InMemoryQueue
         lock (_lock) _messages.Clear();
     }
 
-    public QueueProperties GetProperties()
+    public QueueStatus GetProperties()
     {
         lock (_lock)
         {
             RemoveExpired();
             // The service's count includes hidden messages; so does this one.
-            return QueuesModelFactory.QueueProperties(_metadata ?? new Dictionary<string, string>(), _messages.Count);
+            return new QueueStatus(_messages.Count, new Dictionary<string, string>(_metadata ?? new Dictionary<string, string>()));
         }
     }
 

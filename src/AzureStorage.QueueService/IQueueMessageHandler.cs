@@ -9,7 +9,7 @@ namespace AzureStorage.QueueService;
 /// Return normally and the processor completes the message; throw and it is abandoned and retried later; or settle
 /// it yourself with <see cref="QueueMessage{T}.CompleteAsync"/>, <see cref="QueueMessage{T}.AbandonAsync"/> or
 /// <see cref="QueueMessage{T}.DeadLetterAsync(string?, CancellationToken)"/> and the processor leaves it alone. With
-/// <see cref="QueueProcessorOptions.DeadLetterOnDeserializationFailure"/> off, <see cref="QueueMessage{T}.Body"/>
+/// <see cref="QueueProcessorOptionsBase.DeadLetterOnDeserializationFailure"/> off, <see cref="QueueMessage{T}.Body"/>
 /// can be null with <see cref="QueueMessage{T}.Error"/> set. The token is cancelled when the host shuts down.
 /// </remarks>
 public interface IQueueMessageHandler<TMessage>

@@ -10,7 +10,7 @@ public delegate ValueTask QueueMessageDelegate(QueueMessageContext context);
 /// </summary>
 /// <remarks>
 /// Call <c>next</c> to go on to the handler, or return without calling it to stop there: the processor then
-/// treats the message as handled (with <see cref="QueueProcessorOptions.AutoComplete"/> on, it is completed). Throw and
+/// treats the message as handled (with <see cref="QueueProcessorOptionsBase.AutoComplete"/> on, it is completed). Throw and
 /// the message counts as failed, exactly as if the handler had thrown. A middleware can settle the message itself
 /// through <see cref="QueueMessageContext.Message"/>. Register it with <c>UseMiddleware&lt;T&gt;()</c> on one client's
 /// builder, or on <c>AddAzureStorageQueueClient(queues => queues.UseMiddleware&lt;T&gt;())</c> for every client; each

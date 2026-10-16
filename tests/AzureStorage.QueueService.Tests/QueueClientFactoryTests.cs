@@ -31,6 +31,9 @@ public class QueueClientFactoryTests
                 var client = new Mock<QueueClient>();
                 // The SDK derives the name from the last URI segment, ignoring a trailing slash.
                 client.Setup(x => x.Name).Returns(settings.QueueName ?? settings.EndpointUri?.AbsolutePath.TrimEnd('/').Split('/').Last() ?? "queue");
+                // Dead-lettering sends to the poison queue, which reads the receipt the service returns.
+                client.Setup(x => x.SendMessageAsync(It.IsAny<BinaryData>(), It.IsAny<TimeSpan?>(), It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(Response.FromValue(QueuesModelFactory.SendReceipt("1", DateTimeOffset.Now, DateTimeOffset.Now, "r", DateTimeOffset.Now), Mock.Of<Response>()));
                 return client.Object;
             });
 
