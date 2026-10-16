@@ -12,8 +12,8 @@ public static class ServiceCollectionExtensions
     /// Can be called more than once; later calls add clients to the same registration.
     /// </summary>
     /// <param name="serializerOptions">
-    /// Serializer options shared by every client that does not set its own <see cref="QueueClientSettings.SerializerOptions"/>.
-    /// When omitted, an <see cref="IMessageConverter"/> you registered yourself is used if present.
+    /// JSON options shared by every client that does not set its own serializer with <c>UseSerializer</c> /
+    /// <c>UseJsonSerializer</c>. When omitted, an <see cref="IQueueMessageSerializer"/> you registered yourself is used if present.
     /// </param>
     public static IServiceCollection AddAzureStorageQueueClient(this IServiceCollection services, Action<QueueClientSettingsBuilder> configure, JsonSerializerOptions? serializerOptions = null)
     {
@@ -23,12 +23,12 @@ public static class ServiceCollectionExtensions
         var registry = GetOrAddRegistry(services);
 
         services.TryAddSingleton<IQueueClientFactory, QueueClientFactory>();
-        services.TryAddSingleton<IQueueClientBuilder, QueueClientBuilder>();
+        services.TryAddSingleton<ISdkQueueClientFactory, SdkQueueClientFactory>();
 
         if (serializerOptions is not null)
-            services.Replace(ServiceDescriptor.Singleton<IMessageConverter>(new JsonQueueMessageConverter(serializerOptions)));
+            services.Replace(ServiceDescriptor.Singleton<IQueueMessageSerializer>(new JsonQueueMessageSerializer(serializerOptions)));
         else
-            services.TryAddSingleton<IMessageConverter>(new JsonQueueMessageConverter());
+            services.TryAddSingleton<IQueueMessageSerializer>(new JsonQueueMessageSerializer());
 
         configure(new QueueClientSettingsBuilder(services, registry));
 
@@ -41,8 +41,7 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    // One registry per service collection. It used to be a process-wide static, so every host built in the same
-    // process (a second host, a test host) silently shared and overwrote one set of client settings.
+    // One registry per service collection, so two hosts in one process never share client settings.
     private static QueueClientSettingsRegistry GetOrAddRegistry(IServiceCollection services)
     {
         foreach (var descriptor in services)

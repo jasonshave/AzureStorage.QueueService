@@ -11,25 +11,16 @@ public static class Endpoints
         return builder;
     }
 
-    public static async ValueTask<Results<Ok<Person>, BadRequest>> SendMessage(Person input, IQueueClientFactory clientFactory)
+    // Round-trips a message through the real queue (Azurite in CI) using the 3.0 API: send, receive, complete.
+    public static async ValueTask<Results<Ok<Person>, BadRequest>> SendMessage(Person input, IStorageQueue queue)
     {
-        var client = clientFactory.GetQueueClient();
-        await client.SendMessageAsync(input);
-
-        await Task.Delay(1000);
+        await queue.SendAsync(input);
 
         Person? response = null;
-        await client.ReceiveMessagesAsync<Person>(HandleMessage, HandleException, 10);
-
-        ValueTask HandleMessage(Person? message, IDictionary<string, string>? metadata)
+        foreach (var message in await queue.ReceiveAsync<Person>(maxMessages: 10))
         {
-            response = message;
-            return ValueTask.CompletedTask;
-        }
-
-        ValueTask HandleException(Exception ex, IDictionary<string, string>? metadata)
-        {
-            return ValueTask.CompletedTask;
+            if (message.Error is null) response = message.Body;
+            await message.CompleteAsync();
         }
 
         if (response is not null)

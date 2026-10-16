@@ -10,6 +10,8 @@ internal sealed class QueueClientSettingsRegistry
 
     public bool HasDefaultClient { get; set; }
 
+    public bool ValidateOnStart { get; set; }
+
     public IReadOnlyCollection<string> ClientNames => _clientNames;
 
     public void Add(string clientName) => _clientNames.Add(clientName);

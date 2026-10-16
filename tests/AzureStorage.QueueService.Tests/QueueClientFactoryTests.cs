@@ -1,4 +1,5 @@
-﻿using Azure.Storage.Queues;
+﻿using Azure.Identity;
+using Azure.Storage.Queues;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,77 +13,71 @@ public class QueueClientFactoryTests
 
     /// <summary>
     /// A service collection whose SDK client construction is stubbed out so no settings validation or network
-    /// access happens. Every call to the builder is recorded in <c>created</c>.
+    /// access happens. Every call to the SDK factory is recorded in <c>created</c>.
     /// </summary>
     private static (IServiceCollection Services, List<(string Description, QueueClientSettings Settings)> Created) CreateServices()
     {
         var created = new List<(string, QueueClientSettings)>();
-        var builder = new Mock<IQueueClientBuilder>();
-        builder.Setup(x => x.CreateClient(It.IsAny<string>(), It.IsAny<QueueClientSettings>()))
+        var sdkClients = new Mock<ISdkQueueClientFactory>();
+        sdkClients.Setup(x => x.CreateClient(It.IsAny<string>(), It.IsAny<QueueClientSettings>()))
             .Returns((string description, QueueClientSettings settings) =>
             {
                 created.Add((description, settings));
-                return new Mock<QueueClient>().Object;
+                var client = new Mock<QueueClient>();
+                // The SDK derives the name from the last URI segment, ignoring a trailing slash.
+                client.Setup(x => x.Name).Returns(settings.QueueName ?? settings.EndpointUri?.AbsolutePath.TrimEnd('/').Split('/').Last() ?? "queue");
+                return client.Object;
             });
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton(builder.Object); // registered first so the library's TryAdd keeps it
+        services.AddSingleton(sdkClients.Object); // registered first so the library's TryAdd keeps it
 
         return (services, created);
     }
 
+    private static IQueueClientFactory Factory(IServiceCollection services) =>
+        services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
+
+    private static ValueTask DeadLetter(IStorageQueue queue) =>
+        ((IQueueMessageOperations)queue).DeadLetterAsync("1", "r", 5, BinaryData.FromString("{}"), null, CancellationToken.None);
+
     [Fact]
-    public void GetNamedClient_ReturnsSameClientEachTime()
+    public void GetQueue_ReturnsSameInstanceEachTime()
     {
-        // arrange
         var (services, created) = CreateServices();
         services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => { y.ConnectionString = ConnectionString; y.QueueName = "foo-queue"; }));
-        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
+        var factory = Factory(services);
 
-        // act
-        var client1 = factory.GetQueueClient("foo");
-        var client2 = factory.GetQueueClient("foo");
-
-        // assert
-        client1.Should().BeSameAs(client2);
+        factory.GetQueue("foo").Should().BeSameAs(factory.GetQueue("foo"));
+        factory.GetQueue("foo").QueueName.Should().Be("foo-queue");
         created.Should().ContainSingle().Which.Settings.QueueName.Should().Be("foo-queue");
     }
 
     [Fact]
     public void RegisterMultipleNamedClients_EachGetsItsOwnSettings()
     {
-        // arrange
         var (services, created) = CreateServices();
         services.AddAzureStorageQueueClient(x =>
         {
             x.AddClient("foo", y => { y.ConnectionString = ConnectionString; y.QueueName = "foo-queue"; });
             x.AddClient("bar", y => { y.ConnectionString = ConnectionString; y.QueueName = "bar-queue"; });
         });
-        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
+        var factory = Factory(services);
 
-        // act
-        var foo = factory.GetQueueClient("foo");
-        var bar = factory.GetQueueClient("bar");
-
-        // assert
-        foo.Should().NotBeSameAs(bar);
+        factory.GetQueue("foo").Should().NotBeSameAs(factory.GetQueue("bar"));
         created.Select(c => c.Settings.QueueName).Should().BeEquivalentTo("foo-queue", "bar-queue");
     }
 
     [Fact]
     public void AddClientTwiceForSameName_ComposesConfiguration()
     {
-        // arrange
         var (services, created) = CreateServices();
         services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => y.ConnectionString = ConnectionString));
         services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => y.QueueName = "foo-queue"));
-        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
 
-        // act
-        factory.GetQueueClient("foo");
+        Factory(services).GetQueue("foo");
 
-        // assert
         var settings = created.Should().ContainSingle().Which.Settings;
         settings.ConnectionString.Should().Be(ConnectionString);
         settings.QueueName.Should().Be("foo-queue");
@@ -91,17 +86,14 @@ public class QueueClientFactoryTests
     [Fact]
     public void SeparateServiceCollections_DoNotShareSettings()
     {
-        // arrange
         var (servicesA, createdA) = CreateServices();
         var (servicesB, createdB) = CreateServices();
         servicesA.AddAzureStorageQueueClient(x => x.AddDefaultClient(y => { y.ConnectionString = ConnectionString; y.QueueName = "queue-a"; }));
         servicesB.AddAzureStorageQueueClient(x => x.AddDefaultClient(y => { y.ConnectionString = ConnectionString; y.QueueName = "queue-b"; }));
 
-        // act
-        servicesA.BuildServiceProvider().GetRequiredService<IQueueClientFactory>().GetQueueClient();
-        servicesB.BuildServiceProvider().GetRequiredService<IQueueClientFactory>().GetQueueClient();
+        Factory(servicesA).GetQueue();
+        Factory(servicesB).GetQueue();
 
-        // assert
         createdA.Should().ContainSingle().Which.Settings.QueueName.Should().Be("queue-a");
         createdB.Should().ContainSingle().Which.Settings.QueueName.Should().Be("queue-b");
     }
@@ -109,32 +101,25 @@ public class QueueClientFactoryTests
     [Fact]
     public void GetUnregisteredClient_ThrowsNamingTheRegisteredClients()
     {
-        // arrange
         var (services, _) = CreateServices();
         services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => y.ConnectionString = ConnectionString));
-        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
 
-        // act/assert
-        factory.Invoking(x => x.GetQueueClient("bar")).Should().Throw<ApplicationException>()
+        Factory(services).Invoking(x => x.GetQueue("bar")).Should().Throw<InvalidOperationException>()
             .WithMessage("*'bar'*").WithMessage("*'foo'*");
     }
 
     [Fact]
     public void GetDefaultClient_WhenNoneRegistered_Throws()
     {
-        // arrange
         var (services, _) = CreateServices();
         services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => y.ConnectionString = ConnectionString));
-        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
 
-        // act/assert
-        factory.Invoking(x => x.GetQueueClient()).Should().Throw<ApplicationException>().WithMessage("*AddDefaultClient*");
+        Factory(services).Invoking(x => x.GetQueue()).Should().Throw<InvalidOperationException>().WithMessage("*AddDefaultClient*");
     }
 
     [Fact]
-    public void Clients_CanBeInjectedDirectly()
+    public void Queues_CanBeInjectedDirectly()
     {
-        // arrange
         var (services, _) = CreateServices();
         services.AddAzureStorageQueueClient(x =>
         {
@@ -144,49 +129,137 @@ public class QueueClientFactoryTests
         var provider = services.BuildServiceProvider();
         var factory = provider.GetRequiredService<IQueueClientFactory>();
 
-        // act/assert
-        provider.GetRequiredKeyedService<AzureStorageQueueClient>("foo").Should().BeSameAs(factory.GetQueueClient("foo"));
-        provider.GetRequiredKeyedService<IAzureStorageQueueClient>("foo").Should().BeSameAs(factory.GetQueueClient("foo"));
-        provider.GetRequiredService<AzureStorageQueueClient>().Should().BeSameAs(factory.GetQueueClient());
-        provider.GetRequiredService<IAzureStorageQueueClient>().Should().BeSameAs(factory.GetQueueClient());
+        var foo = factory.GetQueue("foo");
+        provider.GetRequiredKeyedService<IStorageQueue>("foo").Should().BeSameAs(foo);
+        provider.GetRequiredKeyedService<IQueueSender>("foo").Should().BeSameAs(foo);
+        provider.GetRequiredKeyedService<IQueueReceiver>("foo").Should().BeSameAs(foo);
+
+        var @default = factory.GetQueue();
+        provider.GetRequiredService<IStorageQueue>().Should().BeSameAs(@default);
+        provider.GetRequiredService<IQueueSender>().Should().BeSameAs(@default);
+        provider.GetRequiredService<IQueueReceiver>().Should().BeSameAs(@default);
     }
 
     [Fact]
     public void AddClient_FromConfigurationSection_BindsSettings()
     {
-        // arrange
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Queues:Foo:ConnectionString"] = ConnectionString,
             ["Queues:Foo:QueueName"] = "foo-queue",
             ["Queues:Foo:VisibilityTimeout"] = "00:05:00",
+            ["Queues:Foo:PoisonQueueName"] = "foo-dead",
         }).Build();
         var (services, created) = CreateServices();
         services.AddAzureStorageQueueClient(x => x.AddClient("foo", configuration.GetSection("Queues:Foo")));
-        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
 
-        // act
-        factory.GetQueueClient("foo");
+        Factory(services).GetQueue("foo");
 
-        // assert
         var settings = created.Should().ContainSingle().Which.Settings;
         settings.QueueName.Should().Be("foo-queue");
         settings.VisibilityTimeout.Should().Be(TimeSpan.FromMinutes(5));
+        settings.PoisonQueueName.Should().Be("foo-dead");
+    }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // Poison queue (F6)
+    // ---------------------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task PoisonQueue_UsesTheSameAccount_WithConnectionString()
+    {
+        var (services, created) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("orders", y => { y.ConnectionString = ConnectionString; y.QueueName = "orders"; }));
+
+        await DeadLetter(Factory(services).GetQueue("orders"));
+
+        created.Should().HaveCount(2);
+        created[1].Description.Should().Contain("poison");
+        created[1].Settings.ConnectionString.Should().Be(ConnectionString);
+        created[1].Settings.QueueName.Should().Be("orders-poison");
+    }
+
+    [Theory]
+    [InlineData("https://account.queue.core.windows.net/orders")]
+    [InlineData("https://account.queue.core.windows.net/orders/")]
+    public async Task PoisonQueue_UsesTheSameAccount_WithEndpointUri(string endpoint)
+    {
+        var (services, created) = CreateServices();
+        var credential = new DefaultAzureCredential();
+        services.AddAzureStorageQueueClient(x => x.AddClient("orders", y =>
+        {
+            y.EndpointUri = new Uri(endpoint);
+            y.TokenCredential = credential;
+        }));
+
+        await DeadLetter(Factory(services).GetQueue("orders"));
+
+        created[1].Settings.EndpointUri.Should().Be(new Uri("https://account.queue.core.windows.net/orders-poison"));
+        created[1].Settings.TokenCredential.Should().BeSameAs(credential);
+    }
+
+    [Fact]
+    public void SiblingQueueUri_KeepsTheQueryString()
+    {
+        QueueClientFactory.SiblingQueueUri(new Uri("https://account.queue.core.windows.net/orders?sv=2024&sig=abc"), "orders-poison")
+            .Should().Be(new Uri("https://account.queue.core.windows.net/orders-poison?sv=2024&sig=abc"));
+    }
+
+    [Fact]
+    public async Task PoisonQueue_ExplicitName_IsUsed()
+    {
+        var (services, created) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("orders", y => { y.ConnectionString = ConnectionString; y.QueueName = "orders"; y.PoisonQueueName = "dead-letters"; }));
+
+        await DeadLetter(Factory(services).GetQueue("orders"));
+
+        created[1].Settings.QueueName.Should().Be("dead-letters");
+    }
+
+    [Fact]
+    public void PoisonQueue_DerivedNameTooLong_FailsClearly()
+    {
+        var longName = new string('a', 57); // valid itself; "-poison" makes it 64
+        var (services, _) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("orders", y => { y.ConnectionString = ConnectionString; y.QueueName = longName; }));
+
+        Factory(services).Invoking(f => f.GetQueue("orders")).Should().Throw<InvalidOperationException>()
+            .WithMessage("*poison*").WithMessage("*PoisonQueueName*");
+    }
+
+    [Fact]
+    public void PoisonQueue_SameAsSource_IsRejected_WithConnectionString()
+    {
+        var (services, _) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("orders", y => { y.ConnectionString = ConnectionString; y.QueueName = "orders"; y.PoisonQueueName = "orders"; }));
+
+        Factory(services).Invoking(f => f.GetQueue("orders")).Should().Throw<InvalidOperationException>().WithMessage("*equal to its own queue name*");
+    }
+
+    [Fact]
+    public void PoisonQueue_SameAsSource_IsRejected_WithEndpointUri()
+    {
+        var (services, _) = CreateServices();
+        services.AddAzureStorageQueueClient(x => x.AddClient("orders", y =>
+        {
+            y.EndpointUri = new Uri("https://account.queue.core.windows.net/orders/");
+            y.TokenCredential = new DefaultAzureCredential();
+            y.PoisonQueueName = "orders";
+        }));
+
+        Factory(services).Invoking(f => f.GetQueue("orders")).Should().Throw<InvalidOperationException>().WithMessage("*equal to its own queue name*");
     }
 
     [Fact]
     public void ConcurrentFirstCalls_CreateOneClient()
     {
-        // arrange
         var (services, created) = CreateServices();
-        services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => y.ConnectionString = ConnectionString));
-        var factory = services.BuildServiceProvider().GetRequiredService<IQueueClientFactory>();
+        services.AddAzureStorageQueueClient(x => x.AddClient("foo", y => { y.ConnectionString = ConnectionString; y.QueueName = "foo-queue"; }));
+        var factory = Factory(services);
 
-        // act
-        var clients = Enumerable.Range(0, 32).AsParallel().Select(_ => factory.GetQueueClient("foo")).ToList();
+        var queues = Enumerable.Range(0, 32).AsParallel().Select(_ => factory.GetQueue("foo")).ToList();
 
-        // assert
         created.Should().ContainSingle();
-        clients.Distinct().Should().ContainSingle();
+        queues.Distinct().Should().ContainSingle();
     }
 }
