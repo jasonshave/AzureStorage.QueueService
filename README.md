@@ -10,7 +10,7 @@
 
 Typed sending, receiving and processing for Azure Storage queues on .NET 10 and later, registered the way `IHttpClientFactory` registers clients: configure named queues once at startup, then inject them or run a processor against them.
 
-Still on .NET 8? Use the 2.x package line, which stays on .NET 8 and keeps receiving fixes.
+Still on .NET 8? Use the 2.x package line, which stays on .NET 8 and keeps receiving fixes. Its documentation is in the [2.x README](https://github.com/jasonshave/AzureStorage.QueueService/tree/2.x#readme).
 
 - **Send** with `IQueueSender`: your object goes in, JSON goes on the queue.
 - **Receive** with `IQueueReceiver`: each message comes back typed, with its identity, and you complete, abandon or dead-letter it.
@@ -210,7 +210,7 @@ Metrics, all tagged with `queue.name`: `queue_messages_received_total`, `queue_m
 
 ## Upgrading from 2.x
 
-**3.0 requires .NET 10.** A project on .NET 8 cannot install it; upgrade the runtime first, or stay on the 2.x line, which remains on .NET 8 and keeps receiving fixes.
+**3.0 requires .NET 10.** A project on .NET 8 cannot install it; upgrade the runtime first, or stay on the [2.x line](https://github.com/jasonshave/AzureStorage.QueueService/tree/2.x#readme), which remains on .NET 8 and keeps receiving fixes.
 
 3.0 is a clean break: the 2.x client (`AzureStorageQueueClient`, `IAzureStorageQueueClient`, `IMessageConverter`, `GetQueueClient()`) is gone, not obsolete. Since moving to 3.0 already means a runtime upgrade, carrying the old API alongside the new one bought little and cost real complexity. The mapping:
 
