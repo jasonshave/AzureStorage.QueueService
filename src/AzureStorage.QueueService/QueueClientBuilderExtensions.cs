@@ -92,7 +92,12 @@ public static class QueueClientBuilderExtensions
         ArgumentNullException.ThrowIfNull(createStore);
 
         builder.Services.AddKeyedSingleton(QueueClientFactory.LargeMessageStoreKey(builder.Name), (provider, _) => createStore(provider));
-        return builder.Configure(settings => settings.LargeMessageThreshold = thresholdBytes);
+        // Clears a store set earlier, so whichever UseLargeMessageStore call comes last is the one that applies.
+        return builder.Configure(settings =>
+        {
+            settings.LargeMessageStore = null;
+            settings.LargeMessageThreshold = thresholdBytes;
+        });
     }
 
     /// <summary>

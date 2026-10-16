@@ -17,10 +17,11 @@ jobs:
     # live storage account. It is started with docker run rather than as a
     # service container because it needs --skipApiVersionCheck: the Azure SDK
     # sends an API version newer than Azurite knows about and Azurite rejects
-    # it with a 400 otherwise. Only the queue port (10001) is mapped.
+    # it with a 400 otherwise. The queue (10001) and blob (10000) ports are
+    # mapped; the blob service backs the large-message package's tests.
     - name: Start Azurite
       run: |
-        docker run -d --name azurite -p 10001:10001 \
+        docker run -d --name azurite -p 10000:10000 -p 10001:10001 \
           mcr.microsoft.com/azure-storage/azurite \
           azurite --queueHost 0.0.0.0 --blobHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck --silent
     - name: Setup .NET
