@@ -38,6 +38,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
     private readonly IHostApplicationLifetime? _lifetime;
     private readonly Func<IServiceProvider, THandler>? _createHandler;
     private readonly string _handlerName;
+    private readonly Action<QueueMessage<TMessage>>? _afterDeserialize;
 
     private readonly CancellationTokenSource _stopReceiving = new();
     private readonly CancellationTokenSource _cancelHandlers = new();
@@ -66,7 +67,8 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         TimeProvider time,
         IHostApplicationLifetime? lifetime = null,
         Func<IServiceProvider, THandler>? createHandler = null,
-        string? handlerName = null)
+        string? handlerName = null,
+        Action<QueueMessage<TMessage>>? afterDeserialize = null)
     {
         // A wrapper handler (the CloudEvent adapter) passes the application's handler name, so logs name the class
         // the application wrote rather than the library's wrapper.
@@ -81,6 +83,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         _time = time;
         _lifetime = lifetime;
         _createHandler = createHandler;
+        _afterDeserialize = afterDeserialize;
         _name = _handlerName;
         _handlerToken = _cancelHandlers.Token;
         _renewalToken = _stopRenewals.Token;
@@ -327,6 +330,9 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
         try
         {
             deserializer?.Deserialize(message);
+            // A wrapper's own reading of the body (the CloudEvent adapter reads the event's data), which sets Error when
+            // it fails, so that failure takes the path below with this processor's options snapshot, metric and outcome.
+            if (message.Error is null) _afterDeserialize?.Invoke(message);
 
             if (message.Error is not null && _options.DeadLetterOnDeserializationFailure)
             {

@@ -256,7 +256,7 @@ public class OrderPoller(IQueueReceiver receiver, ILogger<OrderPoller> logger) :
 
 Depend on `IQueueSender` and `IQueueReceiver` and fake them. A received message can be built in a test: `QueueMessage<T>` has a public constructor that takes a `QueueMessageInfo`, the body and an `IQueueMessageOperations` — stub the operations to assert that your code completed or abandoned the message.
 
-To test a handler end to end — send, processor, handler, then complete, retry or dead-letter — swap the real queues for in-memory ones. No storage account, emulator or connection string is needed, even with `ValidateOnStart()`; each client still needs a `QueueName`. Messages go through each client's serializer and follow the service's rules: a received message is hidden for its visibility timeout and its dequeue count goes up, an abandoned one stays hidden for its retry delay, and settling with an outdated pop receipt throws a `RequestFailedException` (404). Time comes from the registered `TimeProvider`, so a `FakeTimeProvider` drives polling, retries and expiry without real waits. Clients naming the same queue share it, so to see what was dead-lettered, register a client for the poison queue and peek it:
+To test a handler end to end — send, processor, handler, then complete, retry or dead-letter — swap the real queues for in-memory ones. No storage account, emulator or connection string is needed, even with `ValidateOnStart()`; each client still needs a `QueueName`, or an `EndpointUri` that names the queue, checked by the same rules as in production. Messages go through each client's serializer and follow the service's rules: a received message is hidden for its visibility timeout and its dequeue count goes up, an abandoned one stays hidden for its retry delay, and settling with an outdated pop receipt throws a `RequestFailedException` (404). Time comes from the registered `TimeProvider`, so a `FakeTimeProvider` drives polling, retries and expiry without real waits. Clients naming the same queue share it, so to see what was dead-lettered, register a client for the poison queue and peek it:
 
 ```csharp
 var time = new FakeTimeProvider();
@@ -284,7 +284,7 @@ var poisoned = await host.Services.GetRequiredKeyedService<IQueueReceiver>("orde
 
 To drive retries, advance the clock while the processor waits on it: a failed message stays hidden for its retry delay (5 s, then 10 s, ...), and an idle worker polls again after `EmptyQueueBackoffMin`. An advance made before the processor has started waiting does not wake it, so step the clock in time with the polls rather than in one jump.
 
-The in-memory queues differ from the service in a few ways: every queue exists without being created, `ClientOptions` (including Base64 `MessageEncoding`) is ignored, the 64 KiB message size limit is not enforced, and sends and receives emit no spans or metrics of their own (the processor's still do).
+The in-memory queues differ from the service in a few ways: every queue exists without being created, `ClientOptions` (including Base64 `MessageEncoding`) is ignored, the 64 KiB message size limit is not enforced, and sends and receives emit no spans or metrics of their own (the processor's still do). `PropagateTraceContext` works as it does against the service, carrying the caller's current span since there is no `Queue.Send` span.
 
 ## Telemetry
 
@@ -298,7 +298,7 @@ builder.Services.AddOpenTelemetry()
 
 The processor emits a `Queue.Process` span (kind: consumer) per message, tagged with the queue name, message id, dequeue count and outcome. `Queue.Read` (client) and `Queue.Send` (producer) spans for individual receives and sends are off by default because they are noisy; turn them on with `ConfigureQueueServiceTelemetry`. A span whose operation failed is marked with an error status and `error.type`.
 
-Metrics, all tagged with `queue.name`: `queue_messages_received_total`, `queue_messages_sent_total`, `queue_messages_processed_total`, `queue_messages_failed_total`, `queue_message_processing_duration_seconds` (also tagged with `queue.outcome`), `queue_message_size_bytes`.
+Metrics, all tagged with `queue.name`: `queue_messages_received_total`, `queue_messages_sent_total`, `queue_messages_processed_total`, `queue_messages_failed_total`, `queue_message_processing_duration_seconds` (also tagged with `queue.outcome`), `queue_message_size_bytes` (the serializer's output, before any trace-context envelope).
 
 **Standard attribute names.** Alongside the tags above, spans carry the [OpenTelemetry messaging attributes](https://opentelemetry.io/docs/specs/semconv/messaging/), so App Insights and Grafana's messaging views recognise them: `messaging.system` (`azure.storage.queue`; the conventions define no value for Storage queues), `messaging.destination.name` (the queue), and `messaging.operation.type` / `messaging.operation.name` (`send`, `receive` or `process`). Spans also carry `messaging.message.id` where there is one message, `messaging.batch.message_count` on a receive of more than one, and `server.address` / `server.port` on sends and receives. Span names are unchanged, and metrics keep exactly their names and tags from 3.0, so stored history stays continuous.
 
@@ -310,7 +310,9 @@ Metrics, all tagged with `queue.name`: `queue_messages_received_total`, `queue_m
 {"$azqs-envelope":1,"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","tracestate":"...","body":{"orderId":42}}
 ```
 
-`tracestate` appears only when there is one. `body` is the serializer's output as-is when it is JSON; a custom serializer's non-JSON output goes in `body64`, Base64-encoded, instead. The queue's `MessageEncoding` applies to the whole envelope. Dead-lettering copies the envelope unchanged, so a message moved back from the poison queue replays with its trace context. The envelope adds roughly 100 bytes to each message.
+`tracestate` appears only when there is one. `body` is the serializer's output as-is when it is JSON; a custom serializer's non-JSON output goes in `body64`, Base64-encoded, instead. The queue's `MessageEncoding` applies to the whole envelope. Dead-lettering copies the envelope unchanged, so a message moved back from the poison queue replays with its trace context.
+
+**The envelope makes every message bigger.** It adds roughly 100 bytes, plus the length of `tracestate` when there is one. A custom serializer's non-JSON output grows by about a third on top of that, because Base64 turns every 3 bytes into 4. The service rejects a message over 64 KiB, so messages already close to that limit can start failing to send once the setting is on; check your largest messages first. The library does not fall back to sending plain.
 
 The setting is off by default because it changes what is on the queue. Any receiver on 3.1 or later reads both forms, so mixed senders are fine. What needs care is a consumer on 3.0 or earlier, or other code reading the queue (an Azure Function, a script): it sees the envelope as the message and fails to deserialize it, or worse, deserializes it into an object with empty fields. Upgrade those, or teach them the format above, before turning the setting on for any sender.
 

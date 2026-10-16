@@ -1,10 +1,12 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Azure.Messaging;
 using Azure.Storage.Queues.Models;
 using AzureStorage.QueueService.Telemetry;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -54,28 +56,6 @@ public class QueueProcessorTests(ITestOutputHelper output)
             lock (_state.Invocations) _state.Invocations.Add((message.MessageId, _scope));
             _state.Started.Set();
             await _state.Behaviour(message, _scope, cancellationToken);
-        }
-    }
-
-    /// <summary>
-    /// A "something happened" signal. WaitUntilAsync checks the condition, and if it is not yet true waits for the
-    /// next Set() and checks again — grabbing the pending task *before* checking, so a Set() that lands between the
-    /// check and the wait is never missed.
-    /// </summary>
-    private sealed class Signal
-    {
-        private TaskCompletionSource _tcs = New();
-        private static TaskCompletionSource New() => new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public void Set() => Interlocked.Exchange(ref _tcs, New()).TrySetResult();
-
-        public async Task WaitUntilAsync(Func<bool> condition)
-        {
-            while (true)
-            {
-                var next = Volatile.Read(ref _tcs).Task;
-                if (condition()) return;
-                await next.WaitAsync(SafetyNet);
-            }
         }
     }
 
@@ -752,6 +732,7 @@ public class QueueProcessorTests(ITestOutputHelper output)
 
             var services = new ServiceCollection();
             services.AddLogging(logging => logging.AddProvider(new XUnitLoggerProvider(output)));
+            services.AddMetrics(); // so a test can collect this container's measurements alone
             services.AddSingleton(factory.Object); // the library's TryAdd keeps this one
             services.AddSingleton<TimeProvider>(new ObservableTimeProvider()); // so an empty queue never waits on real time
             services.AddSingleton(Calls);
@@ -771,15 +752,20 @@ public class QueueProcessorTests(ITestOutputHelper output)
             return new(new QueueMessageInfo(id, "r0", 1, null, null, null), raw, JsonSerializer.Deserialize<CloudEvent>(raw), null, Ops);
         }
 
+        public IMeterFactory Meters => _provider.GetRequiredService<IMeterFactory>();
+
         public async Task StartAsync()
         {
             await Processor.StartAsync(CancellationToken.None);
             await Processor.StartedAsync(CancellationToken.None);
         }
 
+        /// <summary>Drains: once this returns, every delivery has finished and recorded its outcome.</summary>
+        public Task StopAsync() => Processor.StopAsync(CancellationToken.None).WaitAsync(SafetyNet);
+
         public async ValueTask DisposeAsync()
         {
-            await Processor.StopAsync(CancellationToken.None).WaitAsync(SafetyNet);
+            await StopAsync();
             await _provider.DisposeAsync();
         }
     }
@@ -807,18 +793,24 @@ public class QueueProcessorTests(ITestOutputHelper output)
         message.Settlement.Should().Be(MessageSettlement.Completed);
     }
 
-    [Fact(DisplayName = "A CloudEvent whose data does not match the handler's type is dead-lettered without calling the handler")]
+    [Fact(DisplayName = "A CloudEvent whose data does not match the handler's type is dead-lettered by the processor without calling the handler, and counted as a failure")]
     public async Task CloudEvent_With_Unreadable_Data_Is_Dead_Lettered()
     {
         await using var h = new CloudEventHarness(output);
+        using var failed = new MetricCollector<long>(h.Meters, QueueServiceDiagnostics.ServiceName, "queue_messages_failed_total");
+        using var durations = new MetricCollector<double>(h.Meters, QueueServiceDiagnostics.ServiceName, "queue_message_processing_duration_seconds");
         h.Queue.Then(h.Message("1", OrderEvent.Replace(OrderData, "\"not an order\"")));
 
         await h.StartAsync();
         await h.Ops.WaitForAsync("deadletter");
+        await h.StopAsync();
 
         h.Ops.Calls.Should().ContainSingle(c => c.Op == "deadletter").Which.Reason.Should().Contain("evt-1").And.Contain(nameof(OrderCreated));
         h.Calls.Should().BeEmpty();
         h.Ops.Count("delete").Should().Be(0);
+        // The processor's own unreadable-body path, not a handler's settlement.
+        failed.GetMeasurementSnapshot().Should().ContainSingle().Which.Value.Should().Be(1);
+        durations.GetMeasurementSnapshot().Should().ContainSingle().Which.Tags[QueueServiceDiagnostics.Names.Outcome].Should().Be("dead_lettered");
     }
 
     [Fact(DisplayName = "With DeadLetterOnDeserializationFailure off, unreadable CloudEvent data reaches the handler as null with Error set")]

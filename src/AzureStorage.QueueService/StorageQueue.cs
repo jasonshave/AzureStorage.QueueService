@@ -14,8 +14,6 @@ namespace AzureStorage.QueueService;
 /// </summary>
 internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOwnedReceiver
 {
-    private const int ServiceMaxMessages = 32;
-
     private readonly QueueClient _client;
     private readonly IQueueMessageSerializer _serializer;
     private readonly ILogger<StorageQueue> _logger;
@@ -72,21 +70,17 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
         {
             await EnsureQueueExistsAsync(cancellationToken);
 
-            BinaryData body = _serializer.Serialize(message);
             // The send span when there is one, as the conventions expect of a producer; otherwise whatever the caller
             // is doing (an HTTP request, say). With neither there is no trace to continue and the message goes out plain.
-            if (_propagateTraceContext && (activity ?? Activity.Current) is { } creation)
-                body = TraceContextEnvelope.Wrap(body, creation) ?? body;
-
-            var timeToLive = options?.TimeToLive;
-            // .NET's infinite sentinel is -1 ms; the service requires -1 whole second.
-            if (timeToLive == Timeout.InfiniteTimeSpan) timeToLive = TimeSpan.FromSeconds(-1);
+            var body = StorageQueueCommon.Encode(_serializer, message, _propagateTraceContext, activity ?? Activity.Current, out var serializedSize);
+            var timeToLive = StorageQueueCommon.ServiceTimeToLive(options?.TimeToLive);
             SendReceipt receipt = await _client.SendMessageAsync(body, options?.VisibilityTimeout, timeToLive, cancellationToken);
 
             activity?.SetTag(QueueServiceDiagnostics.Messaging.MessageId, receipt.MessageId);
             var tags = QueueServiceDiagnostics.MetricTags(QueueName);
             _metrics.MessagesSent.Add(1, tags);
-            _metrics.MessageSize.Record(body.ToMemory().Length, tags);
+            // The serializer's output, before any envelope, so the metric means what it meant in 3.0 whatever the setting.
+            _metrics.MessageSize.Record(serializedSize, tags);
 
             return receipt;
         }
@@ -117,16 +111,11 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
         return messages.Count == 0 ? null : messages[0];
     }
 
-    public void Deserialize<T>(QueueMessage<T> message)
-    {
-        if (message.Error is not null) return; // a decoding failure; there is nothing to deserialize
-        var (body, error) = TryDeserialize<T>(message.RawBody);
-        message.SetBody(body, error);
-    }
+    public void Deserialize<T>(QueueMessage<T> message) => StorageQueueCommon.Deserialize(_serializer, message);
 
     private async ValueTask<List<QueueMessage<T>>> ReceiveUndeserializedAsync<T>(int maxMessages, TimeSpan? visibilityTimeout, CancellationToken cancellationToken)
     {
-        ValidateMaxMessages(maxMessages);
+        StorageQueueCommon.ValidateMaxMessages(maxMessages);
 
         var tags = SpanTags(QueueServiceDiagnostics.Messaging.Receive);
         tags.Add(QueueServiceDiagnostics.Names.QueueMessageCount, maxMessages);
@@ -162,19 +151,7 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
             _metrics.MessagesReceived.Add(count, QueueServiceDiagnostics.MetricTags(QueueName));
 
             foreach (var m in received)
-            {
-                var wire = m.Body ?? BinaryData.FromString(m.MessageText ?? string.Empty);
-                // Unwrapped whatever this client's setting, which governs sending only: a receiver reads what any
-                // sender put on the queue.
-                if (!TraceContextEnvelope.TryUnwrap(wire, out var payload, out var creationContext))
-                {
-                    messages.Add(new QueueMessage<T>(Info(m), wire, default, null, this));
-                    continue;
-                }
-
-                // The handler sees the message the sender serialized; dead-lettering still copies the whole envelope.
-                messages.Add(new QueueMessage<T>(Info(m), payload, default, null, this) { WireBody = wire, CreationContext = creationContext });
-            }
+                messages.Add(StorageQueueCommon.Received<T>(Info(m), m.Body ?? BinaryData.FromString(m.MessageText ?? string.Empty), this));
 
             if (maxMessages == 1 && messages.Count == 1) activity?.SetTag(QueueServiceDiagnostics.Messaging.MessageId, messages[0].MessageId);
 
@@ -203,7 +180,7 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
 
     public async ValueTask<IReadOnlyList<PeekedQueueMessage<T>>> PeekAsync<T>(int maxMessages = 1, CancellationToken cancellationToken = default)
     {
-        ValidateMaxMessages(maxMessages);
+        StorageQueueCommon.ValidateMaxMessages(maxMessages);
         await EnsureQueueExistsAsync(cancellationToken);
 
         PeekedMessage[] peeked;
@@ -220,9 +197,8 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
         var messages = new List<PeekedQueueMessage<T>>(peeked.Length + undecodable.Count);
         foreach (var m in peeked)
         {
-            var raw = m.Body ?? BinaryData.FromString(m.MessageText ?? string.Empty);
-            if (TraceContextEnvelope.TryUnwrap(raw, out var payload, out _)) raw = payload;
-            var (body, error) = TryDeserialize<T>(raw);
+            var raw = StorageQueueCommon.Peeked(m.Body ?? BinaryData.FromString(m.MessageText ?? string.Empty));
+            var (body, error) = StorageQueueCommon.TryDeserialize<T>(_serializer, raw);
             messages.Add(new PeekedQueueMessage<T>(m.MessageId, m.DequeueCount, m.InsertedOn, m.ExpiresOn, raw, body, error));
         }
 
@@ -239,29 +215,6 @@ internal sealed class StorageQueue : IStorageQueue, IQueueMessageOperations, IOw
 
     private static QueueMessageInfo Info(SdkQueueMessage m) =>
         new(m.MessageId, m.PopReceipt, m.DequeueCount, m.InsertedOn, m.ExpiresOn, m.NextVisibleOn);
-
-    private (T? Body, DeserializationException? Error) TryDeserialize<T>(BinaryData raw)
-    {
-        try
-        {
-            return (_serializer.Deserialize<T>(raw), null);
-        }
-        catch (DeserializationException e)
-        {
-            return (default, e);
-        }
-        catch (Exception e)
-        {
-            // A custom serializer that throws something else still must not take the receive down.
-            return (default, new DeserializationException($"Could not deserialize the queue message as {typeof(T).Name}: {e.Message}", e));
-        }
-    }
-
-    private static void ValidateMaxMessages(int maxMessages)
-    {
-        if (maxMessages is < 1 or > ServiceMaxMessages)
-            throw new ArgumentOutOfRangeException(nameof(maxMessages), maxMessages, $"The service allows 1 to {ServiceMaxMessages} messages per receive.");
-    }
 
     // ------------------------------------------------------------------------------------------------------------
     // Admin

@@ -90,6 +90,11 @@ public sealed class QueueMessage<T>
     /// <summary>The sender's trace context, when it was carried in an envelope and parsed.</summary>
     internal ActivityContext? CreationContext { get; init; }
 
+    /// <summary>
+    /// What a processor's read step took from the body for a wrapper handler: the CloudEvent adapter's typed data.
+    /// </summary>
+    internal object? HandlerData { get; set; }
+
     /// <summary>Null when deserialization failed (see <see cref="Error"/>) or when the body was JSON <c>null</c>.</summary>
     public T? Body { get; private set; }
 

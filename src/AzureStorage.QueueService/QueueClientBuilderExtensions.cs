@@ -72,18 +72,22 @@ public static class QueueClientBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
 
         var clientName = builder.Name;
-        var optionsName = OptionsName<CloudEventHandlerAdapter<TData, THandler>>(builder);
 
         builder.Services.TryAddScoped<THandler>();
-        return builder.AddHostedProcessor<CloudEvent, CloudEventHandlerAdapter<TData, THandler>>(typeof(THandler).Name, configure, provider =>
-        {
-            // The serializer the client itself uses, so the data is read with the same naming policy as everything
-            // else on this queue. Both lookups are cached by the options monitor, so this is cheap per message.
-            var serializer = provider.GetRequiredService<IOptionsMonitor<QueueClientSettings>>().Get(clientName).Serializer
-                             ?? provider.GetRequiredService<IQueueMessageSerializer>();
-            var options = provider.GetRequiredService<IOptionsMonitor<QueueProcessorOptions>>().Get(optionsName);
-            return new CloudEventHandlerAdapter<TData, THandler>(provider.GetRequiredService<THandler>(), serializer, options.DeadLetterOnDeserializationFailure);
-        });
+        return builder.AddHostedProcessor<CloudEvent, CloudEventHandlerAdapter<TData, THandler>>(
+            typeof(THandler).Name,
+            configure,
+            createHandler: provider => new CloudEventHandlerAdapter<TData, THandler>(provider.GetRequiredService<THandler>()),
+            createAfterDeserialize: provider =>
+            {
+                // The serializer the client itself uses, so the data is read with the same naming policy as everything
+                // else on this queue. Looked up on first use rather than now: by then the processor's StartAsync has
+                // built and validated the client, so a misconfigured client fails startup there, the way it always has.
+                var serializer = new Lazy<IQueueMessageSerializer>(() =>
+                    provider.GetRequiredService<IOptionsMonitor<QueueClientSettings>>().Get(clientName).Serializer
+                    ?? provider.GetRequiredService<IQueueMessageSerializer>());
+                return message => CloudEventHandlerAdapter<TData, THandler>.ReadData(message, serializer.Value);
+            });
     }
 
     // Options are named per client + handler so the same handler type can serve two queues with different settings.
@@ -94,7 +98,8 @@ public static class QueueClientBuilderExtensions
         this IQueueClientBuilder builder,
         string handlerName,
         Action<QueueProcessorOptions>? configure,
-        Func<IServiceProvider, THandler>? createHandler)
+        Func<IServiceProvider, THandler>? createHandler,
+        Func<IServiceProvider, Action<QueueMessage<TMessage>>>? createAfterDeserialize = null)
         where THandler : class, IQueueMessageHandler<TMessage>
     {
         var optionsName = OptionsName<THandler>(builder);
@@ -115,7 +120,8 @@ public static class QueueClientBuilderExtensions
             provider.GetService<TimeProvider>() ?? TimeProvider.System,
             provider.GetService<IHostApplicationLifetime>(),
             createHandler,
-            handlerName));
+            handlerName,
+            createAfterDeserialize?.Invoke(provider)));
 
         return builder;
     }

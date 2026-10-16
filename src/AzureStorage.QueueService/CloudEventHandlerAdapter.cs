@@ -4,55 +4,45 @@ namespace AzureStorage.QueueService;
 
 /// <summary>
 /// The processor handler behind <c>AddCloudEventProcessor&lt;TData, THandler&gt;()</c>. The processor receives and
-/// settles the CloudEvent envelope like any other message; this reads its data and hands both to the application's
+/// settles the CloudEvent envelope like any other message, and reads its data as part of reading the body
+/// (<see cref="ReadData"/>, its after-deserialize step); this hands the event and its data to the application's
 /// handler. Created per message, in the message's scope.
 /// </summary>
 internal sealed class CloudEventHandlerAdapter<TData, THandler> : IQueueMessageHandler<CloudEvent>
     where THandler : class, ICloudEventHandler<TData>
 {
     private readonly THandler _handler;
-    private readonly IQueueMessageSerializer _serializer;
-    private readonly bool _deadLetterOnDeserializationFailure;
 
-    public CloudEventHandlerAdapter(THandler handler, IQueueMessageSerializer serializer, bool deadLetterOnDeserializationFailure)
+    public CloudEventHandlerAdapter(THandler handler)
     {
         _handler = handler;
-        _serializer = serializer;
-        _deadLetterOnDeserializationFailure = deadLetterOnDeserializationFailure;
     }
 
-    public async ValueTask HandleAsync(QueueMessage<CloudEvent> message, CancellationToken cancellationToken)
+    // Data that could not be read only reaches here with DeadLetterOnDeserializationFailure off: Error is set, and
+    // the handler gets null data.
+    public ValueTask HandleAsync(QueueMessage<CloudEvent> message, CancellationToken cancellationToken) =>
+        _handler.HandleAsync(message, message.HandlerData is TData data ? data : default, cancellationToken);
+
+    /// <summary>
+    /// Reads the event's data as <typeparamref name="TData"/> into <see cref="QueueMessage{T}.HandlerData"/>, or sets
+    /// <see cref="QueueMessage{T}.Error"/>. Run by the processor straight after the envelope deserialized, so data that
+    /// cannot be read is an unreadable body to the processor: its options decide, and its metric and outcome record it.
+    /// </summary>
+    public static void ReadData(QueueMessage<CloudEvent> message, IQueueMessageSerializer serializer)
     {
-        var cloudEvent = message.Body;
-        TData? data = default;
-        DeserializationException? error = null;
-
-        // An envelope that failed to deserialize only reaches here with DeadLetterOnDeserializationFailure off; the
-        // handler gets it as it is. A body of JSON null deserializes without error but is not an event either.
-        if (message.Error is null)
+        // A body of JSON null deserializes without error but is not an event either.
+        if (message.Body is not { } cloudEvent)
         {
-            if (cloudEvent is null) error = new DeserializationException("The queue message is JSON null, not a CloudEvent.");
-            else (data, error) = ReadData(cloudEvent);
+            message.SetBody(null, new DeserializationException("The queue message is JSON null, not a CloudEvent."));
+            return;
         }
 
-        if (error is not null)
-        {
-            if (_deadLetterOnDeserializationFailure)
-            {
-                // The processor's own wording, so the poison queue reads the same whichever layer found the problem.
-                // Not tied to the shutdown token, as in the processor: the decision is already made. If the move
-                // fails, the processor abandons the message for retry as it does for any handler that throws.
-                await message.DeadLetterAsync($"the body could not be read: {error.Message}", CancellationToken.None);
-                return;
-            }
-
-            message.SetBody(cloudEvent, error);
-        }
-
-        await _handler.HandleAsync(message, data, cancellationToken);
+        var (data, error) = ReadData(cloudEvent, serializer);
+        if (error is not null) message.SetBody(cloudEvent, error);
+        else message.HandlerData = data;
     }
 
-    private (TData? Data, DeserializationException? Error) ReadData(CloudEvent cloudEvent)
+    private static (TData? Data, DeserializationException? Error) ReadData(CloudEvent cloudEvent, IQueueMessageSerializer serializer)
     {
         // No data at all is a valid event.
         if (cloudEvent.Data is null) return (default, null);
@@ -63,7 +53,7 @@ internal sealed class CloudEventHandlerAdapter<TData, THandler> : IQueueMessageH
 
         try
         {
-            return (_serializer.Deserialize<TData>(cloudEvent.Data), null);
+            return (serializer.Deserialize<TData>(cloudEvent.Data), null);
         }
         catch (Exception e)
         {

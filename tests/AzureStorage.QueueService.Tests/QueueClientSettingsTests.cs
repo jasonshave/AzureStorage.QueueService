@@ -110,6 +110,25 @@ public class QueueClientSettingsTests
         settings.ValidateConnection().Should().Contain("no queue name");
     }
 
+    [Theory(DisplayName = "S2: in memory, no credential is needed but the endpoint's queue rules still apply, and the queue is the endpoint's")]
+    [InlineData("", null, "no queue name")]
+    [InlineData("orders", "other", "points at queue 'orders'")]
+    [InlineData("orders", null, null)]
+    public void In_Memory_Applies_The_Endpoint_Queue_Rules(string path, string? queueName, string? problem)
+    {
+        var settings = new QueueClientSettings { EndpointUri = new Uri(Account + path), QueueName = queueName };
+
+        if (problem is null)
+        {
+            settings.ValidateInMemory().Should().BeNull();
+            settings.InMemoryQueueName.Should().Be("orders");
+        }
+        else
+        {
+            settings.ValidateInMemory().Should().Contain(problem);
+        }
+    }
+
     // ---------------------------------------------------------------------------------------------------------
     // S3: receive timing
     // ---------------------------------------------------------------------------------------------------------

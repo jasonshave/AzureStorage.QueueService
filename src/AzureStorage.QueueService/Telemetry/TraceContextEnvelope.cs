@@ -38,8 +38,10 @@ internal static class TraceContextEnvelope
     /// <summary>
     /// Wraps <paramref name="payload"/> with the context of <paramref name="activity"/>, or returns null when the
     /// activity has no W3C identity to carry (the legacy hierarchical id format), in which case the message goes out plain.
+    /// <paramref name="payloadIsJson"/> says the caller already knows the payload is exactly one JSON value (the library's
+    /// own serializer), which saves parsing the whole payload on every send; otherwise it is checked.
     /// </summary>
-    public static BinaryData? Wrap(BinaryData payload, Activity activity)
+    public static BinaryData? Wrap(BinaryData payload, Activity activity, bool payloadIsJson = false)
     {
         if (activity.IdFormat != ActivityIdFormat.W3C) return null;
 
@@ -54,7 +56,7 @@ internal static class TraceContextEnvelope
             writer.WriteNumber(MarkerUtf8, Version);
             writer.WriteString(TraceParentUtf8, traceParent);
             if (!string.IsNullOrEmpty(activity.TraceStateString)) writer.WriteString(TraceStateUtf8, activity.TraceStateString);
-            if (IsSingleJsonValue(body))
+            if (payloadIsJson || IsSingleJsonValue(body))
             {
                 writer.WritePropertyName(BodyUtf8);
                 writer.WriteRawValue(body, skipInputValidation: true);
@@ -72,6 +74,9 @@ internal static class TraceContextEnvelope
     /// <summary>
     /// When <paramref name="wire"/> is an envelope, returns the original payload (a slice of the same bytes for a JSON
     /// body) and the sender's context, if it parses. Anything else is a plain message and is left alone.
+    /// Never throws: it runs inside every receive, so one malformed message must not fail the batch it arrived in. A
+    /// lookalike that breaks part-way is delivered as it arrived, and its deserialization failure takes the usual
+    /// dead-letter path.
     /// </summary>
     public static bool TryUnwrap(BinaryData wire, out BinaryData payload, out ActivityContext? creationContext)
     {
@@ -85,9 +90,10 @@ internal static class TraceContextEnvelope
         {
             return TryRead(memory, ref payload, ref creationContext);
         }
-        catch (JsonException)
+        catch (Exception e) when (e is JsonException or InvalidOperationException)
         {
-            // Starts like JSON but is not: a plain message.
+            // Starts like JSON but is not (JsonException), or has a string that is not valid UTF-8, which the reader
+            // only discovers when the string is read (InvalidOperationException): a plain message.
             payload = wire;
             creationContext = null;
             return false;
@@ -125,8 +131,8 @@ internal static class TraceContextEnvelope
             }
             else if (reader.ValueTextEquals(Body64Utf8) && body is null)
             {
-                if (!reader.Read() || reader.TokenType != JsonTokenType.String) return false;
-                body = new BinaryData(reader.GetBytesFromBase64());
+                if (!reader.Read() || reader.TokenType != JsonTokenType.String || !reader.TryGetBytesFromBase64(out var bytes)) return false;
+                body = new BinaryData(bytes);
             }
             else
             {

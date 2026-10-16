@@ -30,7 +30,8 @@ internal sealed class InMemoryQueueStore
             () => GetQueue(settings.InMemoryPoisonQueueName!),
             serializer,
             loggerFactory,
-            settings.VisibilityTimeout);
+            settings.VisibilityTimeout,
+            settings.PropagateTraceContext);
 }
 
 /// <summary>
@@ -39,9 +40,9 @@ internal sealed class InMemoryQueueStore
 /// </summary>
 internal sealed class InMemoryQueue
 {
-    private static readonly TimeSpan MaxVisibility = TimeSpan.FromDays(7);
+    private static readonly TimeSpan MaxVisibility = QueueClientSettings.MaxVisibility;
     private static readonly TimeSpan DefaultTimeToLive = TimeSpan.FromDays(7);
-    private static readonly TimeSpan InfiniteTimeToLive = TimeSpan.FromSeconds(-1);
+    private static readonly TimeSpan InfiniteTimeToLive = StorageQueueCommon.InfiniteTimeToLive;
 
     private readonly object _lock = new();
     private readonly List<Entry> _messages = new();
@@ -56,11 +57,14 @@ internal sealed class InMemoryQueue
 
     public string Name { get; }
 
+    /// <summary>
+    /// Takes the time to live as the service does: -1 second for never. The client converts .NET's -1 ms sentinel first
+    /// (<see cref="StorageQueueCommon.ServiceTimeToLive"/>), as the real client does before calling the service.
+    /// </summary>
     public SendReceipt Send(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive)
     {
         var visibility = WholeSeconds(visibilityTimeout ?? TimeSpan.Zero);
-        // .NET's infinite sentinel is -1 ms, which whole seconds would turn into 0; the service's "never" is -1 second.
-        var ttl = timeToLive == Timeout.InfiniteTimeSpan ? InfiniteTimeToLive : WholeSeconds(timeToLive ?? DefaultTimeToLive);
+        var ttl = WholeSeconds(timeToLive ?? DefaultTimeToLive);
         if (visibility < TimeSpan.Zero || visibility > MaxVisibility) throw OutOfRange("visibilitytimeout", visibility, "0 seconds to 7 days");
         if (ttl != InfiniteTimeToLive && ttl < TimeSpan.FromSeconds(1)) throw OutOfRange("messagettl", ttl, "at least 1 second, or -1 second for never");
         if (ttl != InfiniteTimeToLive && visibility >= ttl) throw OutOfRange("visibilitytimeout", visibility, "less than the time to live");
