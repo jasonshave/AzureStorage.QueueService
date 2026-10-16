@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text;
 using Azure.Storage.Queues;
@@ -238,7 +238,11 @@ public class IntegrationTests : IClassFixture<TestWebApplicationFactory<Program>
         await healthy.CompleteAsync();
 
         var poisoned = (await poison.PeekMessagesAsync(10)).Value.Should().ContainSingle().Subject;
-        Encoding.UTF8.GetString(Convert.FromBase64String(poisoned.MessageText)).Should().Be("this is not base64!!", "the poison client encodes like the source queue, so the raw text round-trips");
+        Encoding.UTF8.GetString(Convert.FromBase64String(poisoned.MessageText)).Should().StartWith("{\"$azqs-envelope\":1", "the poison client encodes like the source queue");
+        var deadLettered = (await _factory.Services.GetRequiredService<IQueueClientFactory>().GetDeadLetterQueue("base64").PeekAsync()).Should().ContainSingle().Subject;
+        deadLettered.RawBody.ToString().Should().Be("this is not base64!!", "the text as it was on the queue is kept");
+        deadLettered.Reason.Should().Be("not base64");
+        deadLettered.OriginalMessageId.Should().Be(bad.MessageId);
         (await raw.PeekMessagesAsync(10)).Value.Should().BeEmpty("both messages were settled");
     }
 }

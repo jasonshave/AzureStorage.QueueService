@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Azure.Messaging;
@@ -231,7 +231,7 @@ public class QueueProcessorTests(ITestOutputHelper output)
     // Delivery
     // ---------------------------------------------------------------------------------------------------------
 
-    [Fact(DisplayName = "Each worker receives one message, handles it in its own scope, and completes it")]
+    [Fact(DisplayName = "The processor asks for as many messages as it has free handlers and handles each in its own scope")]
     public async Task Each_Worker_Handles_One_Message_In_Its_Own_Scope()
     {
         await using var h = new Harness(output, o => o.MaxConcurrentMessages = 2);
@@ -242,7 +242,8 @@ public class QueueProcessorTests(ITestOutputHelper output)
 
         h.State.Invocations.Select(i => i.MessageId).Should().BeEquivalentTo("1", "2");
         h.State.Invocations.Select(i => i.Scope).Distinct().Should().HaveCount(2, "every message gets a fresh scope");
-        h.Queue.Receives.Should().OnlyContain(r => r.Take == 1 && r.Visibility == TimeSpan.FromMinutes(1));
+        h.Queue.Receives[0].Should().Be((2, TimeSpan.FromMinutes(1)), "both handlers are free at the start");
+        h.Queue.Receives.Should().OnlyContain(r => r.Take >= 1 && r.Take <= 2 && r.Visibility == TimeSpan.FromMinutes(1));
     }
 
     [Fact(DisplayName = "A throwing handler abandons the message with the retry delay for its dequeue count")]

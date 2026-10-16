@@ -31,6 +31,7 @@
 		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
 		<PackageReference Include="Microsoft.Extensions.Options" Version="10.0.13" />
 		<PackageReference Include="OpenTelemetry.Api" Version="1.19.1" />
+		<PackageReference Include="System.Threading.RateLimiting" Version="10.0.13" />
 	</ItemGroup>
 
 	<ItemGroup>

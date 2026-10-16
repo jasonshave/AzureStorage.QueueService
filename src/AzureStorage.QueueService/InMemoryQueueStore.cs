@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using Azure;
 using Azure.Storage.Queues.Models;
-using Microsoft.Extensions.Logging;
 
 namespace AzureStorage.QueueService;
 
@@ -23,15 +22,8 @@ internal sealed class InMemoryQueueStore
     // Every queue exists: a test should not have to provision what an emulator or deployment script would.
     public InMemoryQueue GetQueue(string queueName) => _queues.GetOrAdd(queueName, name => new InMemoryQueue(name, _time));
 
-    /// <summary>A client over the queue <paramref name="settings"/> names. The settings must have passed <see cref="QueueClientSettings.ValidateInMemory"/>.</summary>
-    public IStorageQueue CreateClient(QueueClientSettings settings, IQueueMessageSerializer serializer, ILoggerFactory loggerFactory) =>
-        new InMemoryStorageQueue(
-            GetQueue(settings.InMemoryQueueName!),
-            () => GetQueue(settings.InMemoryPoisonQueueName!),
-            serializer,
-            loggerFactory,
-            settings.VisibilityTimeout,
-            settings.PropagateTraceContext);
+    /// <summary>The clock the queues run on: the registered <see cref="TimeProvider"/>, or the system clock.</summary>
+    public TimeProvider Time => _time;
 }
 
 /// <summary>
@@ -42,7 +34,7 @@ internal sealed class InMemoryQueue
 {
     private static readonly TimeSpan MaxVisibility = QueueClientSettings.MaxVisibility;
     private static readonly TimeSpan DefaultTimeToLive = TimeSpan.FromDays(7);
-    private static readonly TimeSpan InfiniteTimeToLive = StorageQueueCommon.InfiniteTimeToLive;
+    private static readonly TimeSpan InfiniteTimeToLive = StorageQueue.InfiniteTimeToLive;
 
     private readonly object _lock = new();
     private readonly List<Entry> _messages = new();
@@ -59,7 +51,7 @@ internal sealed class InMemoryQueue
 
     /// <summary>
     /// Takes the time to live as the service does: -1 second for never. The client converts .NET's -1 ms sentinel first
-    /// (<see cref="StorageQueueCommon.ServiceTimeToLive"/>), as the real client does before calling the service.
+    /// (<see cref="StorageQueue.ServiceTimeToLive"/>), as the real client does before calling the service.
     /// </summary>
     public SendReceipt Send(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive)
     {

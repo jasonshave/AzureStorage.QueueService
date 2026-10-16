@@ -6,6 +6,9 @@ internal class QueueServiceDiagnostics
 {
     public static string ServiceName { get; } = "AzureStorage.QueueService";
 
+    /// <summary>The meter with the OpenTelemetry messaging metric names; opt in by subscribing to it.</summary>
+    public const string MessagingMeterName = "AzureStorage.QueueService.Messaging";
+
     // Static, as ActivitySources normally are: listeners subscribe by name, and there is nothing to dispose per host.
     // The Meter is not: see QueueServiceMetrics.
     public static ActivitySource ActivitySource { get; } = new ActivitySource(ServiceName);
@@ -42,6 +45,9 @@ internal class QueueServiceDiagnostics
         public const string MessageId = "queue.message_id";
         public const string DequeueCount = "queue.dequeue_count";
         public const string Outcome = "queue.outcome";
+        public const string ReceiveResult = "queue.receive_result";
+        public const string DeadLetterReason = "queue.dead_letter_reason";
+        public const string QueueKind = "queue.kind";
     }
 
     /// <summary>
@@ -65,10 +71,12 @@ internal class QueueServiceDiagnostics
         // and spelled out so it can never be mistaken for Service Bus queues.
         public const string SystemValue = "azure.storage.queue";
 
-        // Operation types from the conventions. The operation name is free-form per system; ours is the same word.
+        // Operation types from the conventions. The operation name is free-form per system; ours is the same word,
+        // except for settlement, whose names say which settlement it was.
         public const string Send = "send";
         public const string Receive = "receive";
         public const string Process = "process";
+        public const string Settle = "settle";
     }
 
     /// <summary>
@@ -85,10 +93,25 @@ internal class QueueServiceDiagnostics
     };
 
     /// <summary>
-    /// The tags on every measurement: exactly the 3.0 set. The semantic-convention attributes stay on spans, because a
-    /// new label on an existing metric starts a new series and breaks continuity with stored history.
+    /// The tags on every measurement of the library's own metrics: exactly the 3.0 set. The semantic-convention
+    /// attributes stay on spans and on the separate messaging meter, because a new label on an existing metric starts a
+    /// new series and breaks continuity with stored history.
     /// </summary>
     public static TagList MetricTags(string queueName) => new() { { Names.QueueName, queueName } };
+
+    /// <summary>The tags of the messaging meter's measurements: the conventions' attributes only.</summary>
+    public static TagList MessagingTags(string queueName, string operationType, string operationName, Exception? error = null)
+    {
+        var tags = new TagList
+        {
+            { Messaging.System, Messaging.SystemValue },
+            { Messaging.DestinationName, queueName },
+            { Messaging.OperationType, operationType },
+            { Messaging.OperationName, operationName },
+        };
+        if (error is not null) tags.Add(Messaging.ErrorType, error.GetType().FullName);
+        return tags;
+    }
 
     // Event names only. An ActivityEvent captures its timestamp when constructed, so a shared static instance
     // would stamp every event with the time the process started.

@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 
 namespace AzureStorage.QueueService;
 
@@ -9,10 +9,10 @@ internal static partial class LoggerMessageExtensions
     [LoggerMessage(26, LogLevel.Warning, "Queue '{QueueName}': the message handler threw for message {MessageId} after settling it ({Settlement}); the settlement stands.")]
     public static partial void LogHandlerFailedAfterSettling(this ILogger logger, string? queueName, string messageId, MessageSettlement settlement, Exception exception);
 
-    [LoggerMessage(3, LogLevel.Information, "Queue '{QueueName}': processed message {MessageId} successfully; removing it from the queue.")]
+    [LoggerMessage(3, LogLevel.Debug, "Queue '{QueueName}': processed message {MessageId} successfully; removing it from the queue.")]
     public static partial void LogMessageProcessed(this ILogger logger, string? queueName, string messageId);
 
-    [LoggerMessage(4, LogLevel.Information, "Queue '{QueueName}': processing {MessageCount} message(s).")]
+    [LoggerMessage(4, LogLevel.Debug, "Queue '{QueueName}': processing {MessageCount} message(s).")]
     public static partial void LogMessagesReceived(this ILogger logger, string? queueName, int messageCount);
 
     [LoggerMessage(5, LogLevel.Error, "Queue '{QueueName}': there was a problem sending the message.")]
@@ -21,8 +21,39 @@ internal static partial class LoggerMessageExtensions
     [LoggerMessage(6, LogLevel.Error, "Queue '{QueueName}': failed to receive messages.")]
     public static partial void LogReceiveFailed(this ILogger logger, string? queueName, Exception exception);
 
-    [LoggerMessage(7, LogLevel.Error, "Queue '{QueueName}': the message handler threw for message {MessageId} (dequeue count {DequeueCount}). The message was not completed and will be delivered again.")]
-    public static partial void LogHandlerFailed(this ILogger logger, string? queueName, string messageId, long dequeueCount, Exception exception);
+    // Warning while retries remain, Error on the last attempt: a message that will be retried is not yet a failure.
+    [LoggerMessage(EventId = 7, Message = "Queue '{QueueName}': the message handler threw for message {MessageId} (dequeue count {DequeueCount}). The message was not completed and will be delivered again after {RetryDelay}.")]
+    public static partial void LogHandlerFailed(this ILogger logger, LogLevel level, string? queueName, string messageId, long dequeueCount, TimeSpan retryDelay, Exception exception);
+
+    [LoggerMessage(27, LogLevel.Error, "Queue '{QueueName}': the message handler threw for message {MessageId} on its last attempt (dequeue count {DequeueCount}). It will be moved to the poison queue on its next delivery.")]
+    public static partial void LogHandlerFailedLastAttempt(this ILogger logger, string? queueName, string messageId, long dequeueCount, Exception exception);
+
+    [LoggerMessage(28, LogLevel.Warning, "Queue '{QueueName}': the message handler threw {ExceptionType} for message {MessageId}; the processor's error policy says {Action}.")]
+    public static partial void LogHandlerFailedPolicy(this ILogger logger, string? queueName, string messageId, string exceptionType, HandlerErrorAction action, Exception exception);
+
+    [LoggerMessage(29, LogLevel.Error, "Processor {Processor}: the OnHandlerError callback threw for message {MessageId}; retrying the message instead.")]
+    public static partial void LogProcessorErrorPolicyFailed(this ILogger logger, string processor, string messageId, Exception exception);
+
+    [LoggerMessage(30, LogLevel.Warning, "Queue '{QueueName}': could not delete the stored body {Reference} of message {MessageId}. It is orphaned; a lifecycle rule on the container cleans up anything left behind.")]
+    public static partial void LogLargeMessageDeleteFailed(this ILogger logger, string? queueName, string? messageId, string reference, Exception exception);
+
+    [LoggerMessage(31, LogLevel.Warning, "Processor {Processor}: the handler for message {MessageId} has been running for {Elapsed}, longer than LongRunningHandlerWarning ({Threshold}). It may be hung; its lease is still being renewed{RenewalNote}.")]
+    public static partial void LogProcessorHandlerLongRunning(this ILogger logger, string processor, string messageId, TimeSpan elapsed, TimeSpan threshold, string renewalNote);
+
+    [LoggerMessage(32, LogLevel.Warning, "Processor {Processor}: stopped renewing the lease on message {MessageId} after MaxRenewalDuration ({MaxRenewalDuration}). It becomes visible to other consumers when the lease lapses, even if this handler is still running.")]
+    public static partial void LogProcessorRenewalLimitReached(this ILogger logger, string processor, string messageId, TimeSpan maxRenewalDuration);
+
+    [LoggerMessage(33, LogLevel.Information, "Processor {Processor}: paused; no new messages will be received until it is resumed.")]
+    public static partial void LogProcessorPaused(this ILogger logger, string processor);
+
+    [LoggerMessage(34, LogLevel.Information, "Processor {Processor}: resumed.")]
+    public static partial void LogProcessorResumed(this ILogger logger, string processor);
+
+    [LoggerMessage(35, LogLevel.Error, "Processor {Processor}: queue '{QueueName}' does not exist; trying again in {Backoff}. Create it, or set CreateIfNotExists on the client.")]
+    public static partial void LogProcessorQueueNotFound(this ILogger logger, string processor, string queueName, TimeSpan backoff);
+
+    [LoggerMessage(36, LogLevel.Warning, "Queue '{QueueName}': could not read the queue's approximate message count for the depth metric.")]
+    public static partial void LogDepthReadFailed(this ILogger logger, string queueName, Exception exception);
 
     [LoggerMessage(8, LogLevel.Warning, "Queue '{QueueName}': message {MessageId} was handled successfully but could not be deleted. The handler probably ran longer than the visibility timeout ({VisibilityTimeout}), so the message may be delivered again.")]
     public static partial void LogDeleteFailed(this ILogger logger, string? queueName, string messageId, TimeSpan visibilityTimeout, Exception exception);
@@ -71,6 +102,16 @@ internal static partial class LoggerMessageExtensions
 
     [LoggerMessage(25, LogLevel.Critical, "Processor {Processor}: a worker failed unexpectedly and will restart in {Backoff}. This is a bug in the library; please report it.")]
     public static partial void LogProcessorWorkerFailed(this ILogger logger, string processor, TimeSpan backoff, Exception exception);
+
+    [LoggerMessage(37, LogLevel.Information, "Processor {Processor}: handler threw for message {MessageId} and the processor's error policy completed it.")]
+    public static partial void LogProcessorCompletedByPolicy(this ILogger logger, string processor, string messageId);
+
+    private static readonly Func<ILogger, string, string, long, IDisposable?> DeliveryScope =
+        LoggerMessage.DefineScope<string, string, long>("Queue {QueueName}, message {MessageId}, dequeue count {DequeueCount}");
+
+    /// <summary>A scope for everything logged while one message is delivered, the handler's own logs included.</summary>
+    public static IDisposable? BeginDeliveryScope(this ILogger logger, string queueName, string messageId, long dequeueCount) =>
+        DeliveryScope(logger, queueName, messageId, dequeueCount);
 
     [LoggerMessage(45, LogLevel.Warning, "{Client}: could not make a private copy of its QueueClientOptions, so the Base64 decoding handler is added to the caller's options while the SDK client is built, then removed. A QueueClient the application builds from the same options object at that moment may pick it up. Logged once.")]
     public static partial void LogClientOptionsCopyFailed(this ILogger logger, string client, Exception exception);

@@ -31,7 +31,7 @@ internal sealed class SdkQueueClientFactory : ISdkQueueClientFactory
 
         QueueClient Create(QueueClientOptions? options) => settings.UsesConnectionString
             ? new QueueClient(settings.ConnectionString, settings.QueueName, options)
-            : new QueueClient(settings.EndpointUri, settings.TokenCredential, options);
+            : new QueueClient(settings.QueueUri, settings.TokenCredential, options);
 
         if (settings.ClientOptions is not { MessageEncoding: QueueMessageEncoding.Base64 } callerOptions) return Create(settings.ClientOptions);
 
