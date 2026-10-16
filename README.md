@@ -194,6 +194,36 @@ public class OrderPoller(IQueueReceiver receiver, ILogger<OrderPoller> logger) :
 
 Depend on `IQueueSender` and `IQueueReceiver` and fake them. A received message can be built in a test: `QueueMessage<T>` has a public constructor that takes a `QueueMessageInfo`, the body and an `IQueueMessageOperations` — stub the operations to assert that your code completed or abandoned the message.
 
+To test a handler end to end — send, processor, handler, then complete, retry or dead-letter — swap the real queues for in-memory ones. No storage account, emulator or connection string is needed, even with `ValidateOnStart()`; each client still needs a `QueueName`. Messages go through each client's serializer and follow the service's rules: a received message is hidden for its visibility timeout and its dequeue count goes up, an abandoned one stays hidden for its retry delay, and settling with an outdated pop receipt throws a `RequestFailedException` (404). Time comes from the registered `TimeProvider`, so a `FakeTimeProvider` drives polling, retries and expiry without real waits. Clients naming the same queue share it, so to see what was dead-lettered, register a client for the poison queue and peek it:
+
+```csharp
+var time = new FakeTimeProvider();
+var builder = Host.CreateEmptyApplicationBuilder(new HostApplicationBuilderSettings());
+builder.Services.AddSingleton<TimeProvider>(time);
+builder.Services.AddSingleton(fulfilment); // a fake the handler calls, which the test can await
+builder.Services.AddAzureStorageQueueClient(queues =>
+{
+    queues.AddClient("orders", settings => settings.QueueName = "orders")
+          .AddProcessor<Order, OrderHandler>();
+    queues.AddClient("orders-poison", settings => settings.QueueName = "orders-poison");
+});
+builder.Services.AddInMemoryQueues(); // before or after the registration; with WebApplicationFactory, in ConfigureTestServices
+
+using var host = builder.Build();
+await host.Services.GetRequiredKeyedService<IQueueSender>("orders").SendAsync(new Order(42));
+await host.StartAsync();
+await fulfilment.Called;  // the handler ran
+await host.StopAsync();   // lets the delivery finish settling
+
+var orders = host.Services.GetRequiredKeyedService<IStorageQueue>("orders");
+var remaining = (await orders.GetPropertiesAsync()).ApproximateMessagesCount; // 0 once completed
+var poisoned = await host.Services.GetRequiredKeyedService<IQueueReceiver>("orders-poison").PeekAsync<Order>(32);
+```
+
+To drive retries, advance the clock while the processor waits on it: a failed message stays hidden for its retry delay (5 s, then 10 s, ...), and an idle worker polls again after `EmptyQueueBackoffMin`. An advance made before the processor has started waiting does not wake it, so step the clock in time with the polls rather than in one jump.
+
+The in-memory queues differ from the service in a few ways: every queue exists without being created, `ClientOptions` (including Base64 `MessageEncoding`) is ignored, the 64 KiB message size limit is not enforced, and sends and receives emit no spans or metrics of their own (the processor's still do).
+
 ## Telemetry
 
 Traces and metrics use OpenTelemetry's standard .NET APIs:

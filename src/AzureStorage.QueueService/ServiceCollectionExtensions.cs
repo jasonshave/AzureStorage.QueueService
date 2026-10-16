@@ -35,6 +35,40 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// For tests: makes every registered queue client an in-memory queue — default and named, injected or from
+    /// <see cref="IQueueClientFactory"/>, and the queue each processor reads — so a handler can be exercised end to
+    /// end (send, process, complete, retry, dead-letter) with no storage account or emulator. Can be called before or
+    /// after <see cref="AddAzureStorageQueueClient"/>, for example from a test host's service overrides.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The queues follow the service's rules: messages are serialized with each client's serializer; a received message
+    /// is hidden for its visibility timeout, its dequeue count goes up and it gets a new pop receipt; settling it with an
+    /// outdated receipt throws <see cref="Azure.RequestFailedException"/> with status 404; <see cref="SendOptions"/> are
+    /// honoured. Time comes from the registered <see cref="TimeProvider"/>, or the system clock, so a fake clock drives
+    /// visibility, retry delays and expiry.
+    /// </para>
+    /// <para>
+    /// Clients that name the same queue share it, as on the service. To see what was dead-lettered, register a client
+    /// whose <see cref="QueueClientSettings.QueueName"/> is the poison queue's name (the queue name plus <c>-poison</c>
+    /// unless <see cref="QueueClientSettings.PoisonQueueName"/> says otherwise) and peek it.
+    /// </para>
+    /// <para>
+    /// Connection details are neither needed nor checked, here or by <see cref="QueueClientSettingsBuilder.ValidateOnStart"/>.
+    /// Each client still needs a queue name, and its poison queue name is validated as usual.
+    /// </para>
+    /// </remarks>
+    public static IServiceCollection AddInMemoryQueues(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        // The factory and the startup validator take the store as an optional dependency: its presence is the switch.
+        services.TryAddSingleton(static provider => new InMemoryQueueStore(provider.GetService<TimeProvider>() ?? TimeProvider.System));
+
+        return services;
+    }
+
     public static IServiceCollection ConfigureQueueServiceTelemetry(this IServiceCollection services, Action<QueueServiceTelemetrySettings> options)
     {
         services.Configure(options);

@@ -9,21 +9,24 @@ namespace AzureStorage.QueueService;
 internal sealed class QueueClientFactory : IQueueClientFactory
 {
     // Lazy<T> so two threads asking for the same client for the first time get one instance, not two.
-    private readonly ConcurrentDictionary<string, Lazy<StorageQueue>> _queues = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Lazy<IStorageQueue>> _queues = new(StringComparer.Ordinal);
     private readonly QueueClientSettingsRegistry _registry;
     private readonly IOptionsFactory<QueueClientSettings> _settings;
     private readonly ISdkQueueClientFactory _sdkClients;
     private readonly ILoggerFactory _loggerFactory;
     private readonly IQueueMessageSerializer _serializer;
     private readonly QueueServiceTelemetrySettings _telemetry;
+    private readonly InMemoryQueueStore? _inMemory;
 
+    /// <param name="inMemory">Registered only by <c>AddInMemoryQueues</c>; when present, every client is an in-memory queue.</param>
     public QueueClientFactory(
         QueueClientSettingsRegistry registry,
         IOptionsFactory<QueueClientSettings> settings,
         ISdkQueueClientFactory sdkClients,
         ILoggerFactory loggerFactory,
         IQueueMessageSerializer serializer,
-        IOptions<QueueServiceTelemetrySettings> telemetrySettingsOptions)
+        IOptions<QueueServiceTelemetrySettings> telemetrySettingsOptions,
+        InMemoryQueueStore? inMemory = null)
     {
         _registry = registry;
         _settings = settings;
@@ -31,6 +34,7 @@ internal sealed class QueueClientFactory : IQueueClientFactory
         _loggerFactory = loggerFactory;
         _serializer = serializer;
         _telemetry = telemetrySettingsOptions.Value;
+        _inMemory = inMemory;
     }
 
     public IStorageQueue GetQueue(string clientName)
@@ -63,14 +67,21 @@ internal sealed class QueueClientFactory : IQueueClientFactory
         return GetOrCreate(Options.DefaultName);
     }
 
-    private StorageQueue GetOrCreate(string clientName) =>
-        _queues.GetOrAdd(clientName, name => new Lazy<StorageQueue>(() => Create(name), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+    private IStorageQueue GetOrCreate(string clientName) =>
+        _queues.GetOrAdd(clientName, name => new Lazy<IStorageQueue>(() => Create(name), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
 
-    private StorageQueue Create(string clientName)
+    private IStorageQueue Create(string clientName)
     {
         // A snapshot: the settings a queue was built with are the settings it keeps.
         var settings = _settings.Create(clientName);
         var description = clientName == Options.DefaultName ? "The default queue client" : $"Queue client '{clientName}'";
+
+        if (_inMemory is not null)
+        {
+            // The check ValidateOnStart runs in this mode: the policy without the connection.
+            if (settings.ValidateInMemory() is { } problem) throw new InvalidOperationException($"{description} {problem}");
+            return _inMemory.CreateClient(settings, settings.Serializer ?? _serializer, _loggerFactory);
+        }
 
         // The same check ValidateOnStart runs, so first use can never fail for something startup accepted.
         if (settings.Validate() is { } error) throw new InvalidOperationException($"{description} {error}");

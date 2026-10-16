@@ -72,8 +72,20 @@ public class QueueClientSettings
     /// Where dead-lettered messages go: <see cref="PoisonQueueName"/>, or the queue name plus <c>-poison</c>. An empty
     /// name (a blank placeholder in configuration) counts as not set.
     /// </summary>
-    internal string? EffectivePoisonQueueName =>
-        HasPoisonQueueName ? PoisonQueueName : (EffectiveQueueName is { Length: > 0 } queue ? $"{queue}-poison" : null);
+    internal string? EffectivePoisonQueueName => PoisonQueueNameFor(EffectiveQueueName);
+
+    /// <summary>
+    /// The queue an in-memory client stands in for (see <c>AddInMemoryQueues</c>): the one the SDK client would target,
+    /// or <see cref="QueueName"/> alone, since a test host typically has no connection details at all.
+    /// </summary>
+    internal string? InMemoryQueueName =>
+        EffectiveQueueName is { Length: > 0 } effective ? effective : (string.IsNullOrEmpty(QueueName) ? null : QueueName);
+
+    /// <summary>The poison queue an in-memory client dead-letters to, named by the same rule as the real one.</summary>
+    internal string? InMemoryPoisonQueueName => PoisonQueueNameFor(InMemoryQueueName);
+
+    private string? PoisonQueueNameFor(string? queueName) =>
+        HasPoisonQueueName ? PoisonQueueName : (queueName is { Length: > 0 } queue ? $"{queue}-poison" : null);
 
     private bool HasPoisonQueueName => !string.IsNullOrEmpty(PoisonQueueName);
 
@@ -105,14 +117,22 @@ public class QueueClientSettings
     /// Shared by startup validation and source-queue construction so the two can never disagree. Not applied to
     /// destination clients, which have no policy of their own.
     /// </summary>
-    internal string? Validate()
-    {
-        if (ValidateConnection() is { } connectionProblem) return connectionProblem;
+    internal string? Validate() => ValidateConnection() ?? ValidatePolicy(EffectiveQueueName);
 
+    /// <summary>
+    /// What an in-memory client needs: no connection, but the same processing policy, so a poison queue name that
+    /// would fail in production fails the test too. Returns the problem, or null.
+    /// </summary>
+    internal string? ValidateInMemory() => InMemoryQueueName is { } queueName
+        ? ValidatePolicy(queueName)
+        : "has no QueueName. In-memory queues need no connection details, but still need a queue name to name the queue and its poison queue.";
+
+    private string? ValidatePolicy(string? queueName)
+    {
         if (VisibilityTimeout is { } visibility && (visibility < MinVisibility || visibility > MaxVisibility))
             return $"has a VisibilityTimeout of {visibility}; the service accepts 1 second to 7 days.";
 
-        var poison = EffectivePoisonQueueName;
+        var poison = PoisonQueueNameFor(queueName);
         if (poison is not null && QueueNameRules.Check(poison) is { } problem)
         {
             return !HasPoisonQueueName
@@ -120,7 +140,7 @@ public class QueueClientSettings
                 : $"has an invalid PoisonQueueName: {problem}";
         }
 
-        if (poison is not null && string.Equals(poison, EffectiveQueueName, StringComparison.Ordinal))
+        if (poison is not null && string.Equals(poison, queueName, StringComparison.Ordinal))
             return $"has PoisonQueueName equal to its own queue name ('{poison}'). Dead-lettered messages would go straight back onto the queue with a fresh dequeue count; use a different poison queue.";
 
         return null;

@@ -106,11 +106,12 @@ public class QueueClientSettingsBuilder
     private void AddStartupValidation(string clientName) =>
         Services.AddOptions<QueueClientSettings>(clientName).ValidateOnStart();
 
-    private sealed class QueueClientSettingsValidator : IValidateOptions<QueueClientSettings>
+    // The in-memory store is registered only by AddInMemoryQueues; its presence means there is no connection to check.
+    private sealed class QueueClientSettingsValidator(InMemoryQueueStore? inMemory = null) : IValidateOptions<QueueClientSettings>
     {
         public ValidateOptionsResult Validate(string? name, QueueClientSettings options)
         {
-            var error = options.Validate();
+            var error = inMemory is null ? options.Validate() : options.ValidateInMemory();
             if (error is null) return ValidateOptionsResult.Success;
 
             var description = string.IsNullOrEmpty(name) ? "The default queue client" : $"Queue client '{name}'";
