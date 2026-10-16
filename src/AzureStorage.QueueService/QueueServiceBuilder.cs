@@ -11,13 +11,13 @@ namespace AzureStorage.QueueService;
 /// Registers clients inside <c>AddAzureStorageQueueClient(queues => ...)</c>. Each <c>AddClient</c> /
 /// <c>AddDefaultClient</c> returns a builder for that one client to attach a serializer or a processor to.
 /// </summary>
-public class QueueClientSettingsBuilder
+public class QueueServiceBuilder
 {
     internal IServiceCollection Services { get; }
 
     internal QueueClientSettingsRegistry Registry { get; }
 
-    internal QueueClientSettingsBuilder(IServiceCollection services, QueueClientSettingsRegistry registry)
+    internal QueueServiceBuilder(IServiceCollection services, QueueClientSettingsRegistry registry)
     {
         Services = services;
         Registry = registry;
@@ -116,7 +116,7 @@ public class QueueClientSettingsBuilder
     /// poison queue name fails startup with a clear message instead of failing the first request. Applies to
     /// clients registered before and after this call.
     /// </summary>
-    public QueueClientSettingsBuilder ValidateOnStart()
+    public QueueServiceBuilder ValidateOnStart()
     {
         if (Registry.ValidateOnStart) return this;
 
@@ -137,7 +137,7 @@ public class QueueClientSettingsBuilder
     /// own credential wins, and clients that use a connection string are left alone. Calling this again replaces the
     /// credential.
     /// </summary>
-    public QueueClientSettingsBuilder UseTokenCredential(TokenCredential credential)
+    public QueueServiceBuilder UseTokenCredential(TokenCredential credential)
     {
         ArgumentNullException.ThrowIfNull(credential);
 
@@ -158,7 +158,7 @@ public class QueueClientSettingsBuilder
     /// endpoint needs a credential, from <see cref="UseTokenCredential"/> or each client's own. Applies to default and
     /// named clients, registered before and after this call; calling it again replaces the account.
     /// </summary>
-    public QueueClientSettingsBuilder UseStorageAccount(string connectionStringOrServiceUri)
+    public QueueServiceBuilder UseStorageAccount(string connectionStringOrServiceUri)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionStringOrServiceUri);
 
@@ -176,7 +176,7 @@ public class QueueClientSettingsBuilder
     /// (<c>https://account.queue.core.windows.net/</c>). Clients connect with <see cref="UseTokenCredential"/>'s
     /// credential or their own.
     /// </summary>
-    public QueueClientSettingsBuilder UseStorageAccount(Uri serviceUri)
+    public QueueServiceBuilder UseStorageAccount(Uri serviceUri)
     {
         ArgumentNullException.ThrowIfNull(serviceUri);
 
@@ -190,7 +190,7 @@ public class QueueClientSettingsBuilder
     /// Runs <typeparamref name="TMiddleware"/> around every message every client's processors deliver, resolved from the
     /// message's scope (registered as scoped unless you registered it yourself). See <see cref="IQueueMessageMiddleware"/>.
     /// </summary>
-    public QueueClientSettingsBuilder UseMiddleware<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TMiddleware>()
+    public QueueServiceBuilder UseMiddleware<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TMiddleware>()
         where TMiddleware : class, IQueueMessageMiddleware
     {
         Services.TryAddScoped<TMiddleware>();
@@ -199,7 +199,7 @@ public class QueueClientSettingsBuilder
     }
 
     /// <summary>Runs <paramref name="middleware"/> around every message every client's processors deliver. See <see cref="IQueueMessageMiddleware"/>.</summary>
-    public QueueClientSettingsBuilder Use(Func<QueueMessageContext, QueueMessageDelegate, ValueTask> middleware)
+    public QueueServiceBuilder Use(Func<QueueMessageContext, QueueMessageDelegate, ValueTask> middleware)
     {
         ArgumentNullException.ThrowIfNull(middleware);
 
@@ -214,7 +214,7 @@ public class QueueClientSettingsBuilder
     /// Each read is a billable call per queue, so the interval is a cost. The count is the service's approximate one,
     /// and includes messages that are hidden while being processed or waiting for a retry.
     /// </summary>
-    public QueueClientSettingsBuilder AddQueueDepthMetrics(TimeSpan? interval = null)
+    public QueueServiceBuilder AddQueueDepthMetrics(TimeSpan? interval = null)
     {
         var every = interval ?? TimeSpan.FromMinutes(1);
         if (every < TimeSpan.FromSeconds(1)) throw new ArgumentOutOfRangeException(nameof(interval), every, "The depth interval must be at least 1 second.");

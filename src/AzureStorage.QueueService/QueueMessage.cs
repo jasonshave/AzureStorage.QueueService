@@ -79,7 +79,7 @@ public interface IQueueMessage
     ValueTask AbandonAsync(TimeSpan? visibilityTimeout = null, CancellationToken cancellationToken = default);
 
     /// <summary>Keeps the message hidden for another <paramref name="visibilityTimeout"/> (more than zero, up to 7 days), measured from now.</summary>
-    ValueTask RenewLockAsync(TimeSpan visibilityTimeout, CancellationToken cancellationToken = default);
+    ValueTask RenewVisibilityAsync(TimeSpan visibilityTimeout, CancellationToken cancellationToken = default);
 
     /// <summary>Moves the message to the poison queue, recording <paramref name="reason"/> with it.</summary>
     ValueTask DeadLetterAsync(string? reason = null, CancellationToken cancellationToken = default);
@@ -132,7 +132,7 @@ public sealed class QueueMessage<T> : IQueueMessage
     /// <inheritdoc/>
     public string QueueName => Lease.QueueName;
 
-    /// <summary>Changes after <see cref="RenewLockAsync"/> and <see cref="AbandonAsync"/>.</summary>
+    /// <summary>Changes after <see cref="RenewVisibilityAsync"/> and <see cref="AbandonAsync"/>.</summary>
     public string PopReceipt => Lease.PopReceipt;
 
     /// <summary>How many times the message has been received, including this time.</summary>
@@ -212,7 +212,7 @@ public sealed class QueueMessage<T> : IQueueMessage
 
     /// <summary>Keeps the message hidden for another <paramref name="visibilityTimeout"/>, measured from now.</summary>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="visibilityTimeout"/> is not more than zero, or is longer than 7 days.</exception>
-    public ValueTask RenewLockAsync(TimeSpan visibilityTimeout, CancellationToken cancellationToken = default) =>
+    public ValueTask RenewVisibilityAsync(TimeSpan visibilityTimeout, CancellationToken cancellationToken = default) =>
         Lease.RenewAsync(visibilityTimeout, cancellationToken);
 
     /// <summary>

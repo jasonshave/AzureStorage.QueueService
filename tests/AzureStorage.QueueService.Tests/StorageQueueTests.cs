@@ -198,7 +198,7 @@ public class StorageQueueTests
 
         var wrapped = messages.Single(m => m.MessageId == "1");
         wrapped.Body!.Property1.Should().Be("wrapped");
-        wrapped.RawBody.ToString().Should().StartWith("{\"Property1\":\"wrapped\"", "RawBody is the message inside the envelope");
+        wrapped.RawBody.ToString().Should().StartWith("{\"property1\":\"wrapped\"", "RawBody is the message inside the envelope");
         wrapped.CreationContext!.Value.TraceId.Should().Be(sender.TraceId);
         wrapped.CreationContext!.Value.SpanId.Should().Be(sender.SpanId);
 
@@ -252,7 +252,7 @@ public class StorageQueueTests
         SetupUpdate(client, "receipt-1", TimeSpan.FromMinutes(2), "receipt-2");
         var message = (await Create(client).ReceiveAsync<TestObject>())[0];
 
-        await message.RenewLockAsync(TimeSpan.FromMinutes(2));
+        await message.RenewVisibilityAsync(TimeSpan.FromMinutes(2));
         await message.CompleteAsync();
 
         message.PopReceipt.Should().Be("receipt-2");
@@ -306,14 +306,15 @@ public class StorageQueueTests
     public async Task Send_Serializes_And_Passes_Options()
     {
         var client = new Mock<QueueClient>();
-        var receipt = QueuesModelFactory.SendReceipt("1", DateTimeOffset.Now, DateTimeOffset.Now, "r", DateTimeOffset.Now);
+        var inserted = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var receipt = QueuesModelFactory.SendReceipt("1", inserted, inserted.AddDays(7), "r", inserted.AddSeconds(10));
         client.Setup(x => x.SendMessageAsync(It.IsAny<BinaryData>(), It.IsAny<TimeSpan?>(), It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Response.FromValue(receipt, Mock.Of<Response>()));
 
         var result = await Create(client).SendAsync(new TestObject { Property1 = "sent" }, new SendOptions(TimeSpan.FromSeconds(10), TimeSpan.FromHours(1)));
 
-        result.Should().BeSameAs(receipt);
-        client.Verify(x => x.SendMessageAsync(It.Is<BinaryData>(b => b.ToString().Contains("\"Property1\":\"sent\"")), TimeSpan.FromSeconds(10), TimeSpan.FromHours(1), It.IsAny<CancellationToken>()), Times.Once);
+        result.Should().Be(new SendResult("1", "r", inserted, inserted.AddDays(7), inserted.AddSeconds(10)));
+        client.Verify(x => x.SendMessageAsync(It.Is<BinaryData>(b => b.ToString().Contains("\"property1\":\"sent\"")), TimeSpan.FromSeconds(10), TimeSpan.FromHours(1), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Theory(DisplayName = "Send translates the .NET infinite TTL and preserves other TTL values")]

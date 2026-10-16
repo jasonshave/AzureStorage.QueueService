@@ -1,5 +1,3 @@
-using Azure.Storage.Queues.Models;
-
 namespace AzureStorage.QueueService;
 
 /// <summary>
@@ -18,5 +16,15 @@ public interface IStorageQueue : IQueueSender, IQueueReceiver
     /// The queue's metadata and approximate message count. The count includes messages that are hidden (being
     /// processed, or waiting for a retry), so it is not the number a receive would return.
     /// </summary>
-    ValueTask<QueueProperties> GetPropertiesAsync(CancellationToken cancellationToken = default);
+    ValueTask<QueueStatus> GetPropertiesAsync(CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// A queue's approximate message count and metadata, from <see cref="IStorageQueue.GetPropertiesAsync"/>. A plain record,
+/// so a fake <see cref="IStorageQueue"/> can return one with <c>new QueueStatus(...)</c>.
+/// </summary>
+/// <param name="ApproximateMessagesCount">
+/// Roughly how many messages are on the queue, hidden ones (being processed, or waiting for a retry) included.
+/// </param>
+/// <param name="Metadata">The name and value pairs stored on the queue itself; empty when it has none.</param>
+public sealed record QueueStatus(int ApproximateMessagesCount, IReadOnlyDictionary<string, string> Metadata);

@@ -40,7 +40,7 @@ public class BlobLargeMessageEndToEndTests(AzuriteContainer azurite) : IClassFix
 
     private static Report Large(string id) => new(id, string.Concat(Enumerable.Range(0, 10_000).Select(i => $"{i:D9}|")));
 
-    private static IHost BuildHost(FakeTimeProvider time, Action<QueueClientSettingsBuilder> configure)
+    private static IHost BuildHost(FakeTimeProvider time, Action<QueueServiceBuilder> configure)
     {
         var builder = Host.CreateEmptyApplicationBuilder(new HostApplicationBuilderSettings());
         builder.Services.AddSingleton<TimeProvider>(time);

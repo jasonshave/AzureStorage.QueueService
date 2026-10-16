@@ -48,8 +48,8 @@ public static class QueueClientBuilderExtensions
 
     /// <summary>
     /// Serializes this client's messages with System.Text.Json using source-generated metadata, for example
-    /// <c>UseJsonSerializer(MyJsonContext.Default)</c>, which is what a trimmed or native AOT application needs. Property
-    /// names are read case-insensitively, as with the default serializer.
+    /// <c>UseJsonSerializer(MyJsonContext.Default)</c>, which is what a trimmed or native AOT application needs. As with
+    /// the default serializer, property names are written in camelCase and read case-insensitively.
     /// </summary>
     public static IQueueClientBuilder UseJsonSerializer(this IQueueClientBuilder builder, System.Text.Json.Serialization.Metadata.IJsonTypeInfoResolver typeInfoResolver)
     {

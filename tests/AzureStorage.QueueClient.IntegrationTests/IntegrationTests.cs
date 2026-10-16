@@ -65,8 +65,8 @@ public class IntegrationTests : IClassFixture<TestWebApplicationFactory<Program>
             var receipt = await queue.SendAsync(new Person { FirstName = "persistent" },
                 new SendOptions(TimeToLive: Timeout.InfiniteTimeSpan));
 
-            receipt.ExpirationTime.Year.Should().Be(9999);
-            (await raw.PeekMessagesAsync(1)).Value.Should().ContainSingle().Which.ExpiresOn.Should().Be(receipt.ExpirationTime);
+            receipt.ExpiresOn.Year.Should().Be(9999);
+            (await raw.PeekMessagesAsync(1)).Value.Should().ContainSingle().Which.ExpiresOn.Should().Be(receipt.ExpiresOn);
         }
         finally
         {

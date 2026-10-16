@@ -11,7 +11,7 @@ namespace AzureStorage.QueueService.Tests;
 /// </summary>
 public class QueueFeatureTests
 {
-    private static ServiceProvider Services(Action<QueueClientSettingsBuilder> configure)
+    private static ServiceProvider Services(Action<QueueServiceBuilder> configure)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -51,7 +51,7 @@ public class QueueFeatureTests
         await Orders(provider).Invoking(q => q.ReceiveAsync<TestObject>(visibilityTimeout: TimeSpan.FromMilliseconds(500)).AsTask()).Should().ThrowAsync<ArgumentOutOfRangeException>();
         var message = (await Orders(provider).ReceiveAsync<TestObject>())[0];
         await message.Invoking(m => m.AbandonAsync(TimeSpan.FromDays(8)).AsTask()).Should().ThrowAsync<ArgumentOutOfRangeException>();
-        await message.Invoking(m => m.RenewLockAsync(TimeSpan.FromDays(8)).AsTask()).Should().ThrowAsync<ArgumentOutOfRangeException>();
+        await message.Invoking(m => m.RenewVisibilityAsync(TimeSpan.FromDays(8)).AsTask()).Should().ThrowAsync<ArgumentOutOfRangeException>();
         message.IsSettled.Should().BeFalse("nothing reached the queue");
     }
 
@@ -74,10 +74,15 @@ public class QueueFeatureTests
         received.WireBody.ToMemory().Length.Should().BeLessThan(1_000, "5,000 repeated characters compress well");
     }
 
-    [Fact(DisplayName = "The default serializer reads camelCase JSON into PascalCase properties instead of leaving them empty")]
-    public void Default_Serializer_Reads_CamelCase() =>
-        new JsonQueueMessageSerializer().Deserialize<TestObject>(BinaryData.FromString("{\"property1\":\"from JavaScript\",\"property3\":3}"))
-            .Should().BeEquivalentTo(new { Property1 = "from JavaScript", Property3 = 3 });
+    [Fact(DisplayName = "The default serializer writes camelCase JSON and still reads PascalCase from older senders")]
+    public void Default_Serializer_Writes_CamelCase()
+    {
+        var serializer = new JsonQueueMessageSerializer();
+
+        serializer.Serialize(new TestObject { Property1 = "to JavaScript" }).ToString().Should().Contain("\"property1\":\"to JavaScript\"");
+        serializer.Deserialize<TestObject>(BinaryData.FromString("{\"Property1\":\"from 3.0\",\"Property3\":3}"))
+            .Should().BeEquivalentTo(new { Property1 = "from 3.0", Property3 = 3 });
+    }
 
     [Fact(DisplayName = "A message in a later version's envelope comes back with Error set, so a processor dead-letters it intact for replay after upgrading")]
     public async Task Later_Version_Envelope_Is_Not_Misread()

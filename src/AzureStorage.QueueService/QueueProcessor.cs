@@ -511,7 +511,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
             ? LeaseRenewal.Start(
                 async () =>
                 {
-                    await message.RenewLockAsync(_options.VisibilityTimeout, CancellationToken.None);
+                    await message.RenewVisibilityAsync(_options.VisibilityTimeout, CancellationToken.None);
                     _metrics.LeaseRenewals.Add(1, QueueTags());
                 },
                 () => message.IsSettled,
