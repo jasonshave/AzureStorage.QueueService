@@ -13,17 +13,22 @@ internal class QueueServiceDiagnostics
 
     public struct Activities
     {
-        public static Activity? StartReadingQueueActivity(Action<TagList> tags) => ActivitySource.StartActivityWithTags(Names.ReadingMessages, tags);
-        public static Activity? StartSendingMessageActivity(Action<TagList> tags) => ActivitySource.StartActivityWithTags(Names.SendingMessage, tags);
+        public static Activity? StartReadingQueueActivity(in TagList tags) => ActivitySource.StartActivityWithTags(Names.ReadingMessages, ActivityKind.Client, tags);
+        public static Activity? StartSendingMessageActivity(in TagList tags) => ActivitySource.StartActivityWithTags(Names.SendingMessage, ActivityKind.Producer, tags);
+        public static Activity? StartProcessingMessageActivity(in TagList tags) => ActivitySource.StartActivityWithTags(Names.ProcessingMessage, ActivityKind.Consumer, tags);
     }
 
     public struct Names
     {
         public const string ReadingMessages = "Queue.Read";
         public const string SendingMessage = "Queue.Send";
+        public const string ProcessingMessage = "Queue.Process";
         public const string QueueName = "queue.name";
         public const string QueueMessageCount = "queue.message_count";
         public const string QueueProcessSuccess = "queue.process_success";
+        public const string MessageId = "queue.message_id";
+        public const string DequeueCount = "queue.dequeue_count";
+        public const string Outcome = "queue.outcome";
     }
 
     public struct Metrics
@@ -57,11 +62,6 @@ internal class QueueServiceDiagnostics
             "queue_message_size_bytes",
             description: "Size of messages sent to the queue."
         );
-
-        public static readonly UpDownCounter<long> QueueDepth = Meter.CreateUpDownCounter<long>(
-            "queue_depth",
-            description: "Current number of messages in the queue."
-        );
     }
 
     // Event names only. An ActivityEvent captures its timestamp when constructed, so a shared static instance
@@ -69,6 +69,5 @@ internal class QueueServiceDiagnostics
     public struct Events
     {
         public const string QueueMessageReceived = "queue.message_received";
-        public const string QueueMessageProcessed = "queue.message_processed";
     }
 }

@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFramework>net8.0</TargetFramework>
+		<TargetFramework>net10.0</TargetFramework>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AssemblyName>$(MSBuildProjectName)</AssemblyName>
@@ -10,7 +10,7 @@
 		<Company>Unifinity Software Corporation</Company>
 		<PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
-		<Description>A library used to read from an Azure Storage Queue. Use this package in combination with code samples for Azure Communication Services projects where Event Grid subscriptions from a storage queue are used.</Description>
+		<Description>Typed sending, receiving and processing for Azure Storage queues, registered like IHttpClientFactory clients. Includes a hosted processor with lease renewal, retries, a poison queue and graceful shutdown.</Description>
 		<Copyright>Unifinity Software Corporation</Copyright>
 		<PackageTags>Azure, Azure Storage, Azure Storage Queue, Storage Queue, Queue Service, Jason Shave, Unifinity Software Corporation</PackageTags>
 		<PackageProjectUrl>https://github.com/jasonshave/AzureStorage.QueueService</PackageProjectUrl>
@@ -27,10 +27,10 @@
 		<PackageReference Include="Azure.Storage.Queues" Version="12.28.1" />
 		<PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.13" />
 		<PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.13" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
 		<PackageReference Include="Microsoft.Extensions.Options" Version="10.0.13" />
 		<PackageReference Include="OpenTelemetry.Api" Version="1.19.1" />
-		<InternalsVisibleTo Include="AzureStorage.QueueService.Tests" />
 	</ItemGroup>
 
 	<ItemGroup>

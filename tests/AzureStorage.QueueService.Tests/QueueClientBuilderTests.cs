@@ -1,88 +1,178 @@
-﻿using Azure.Identity;
+using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace AzureStorage.QueueService.Tests;
 
 public class QueueClientBuilderTests
 {
-    private const string Description = "Queue client 'test'";
-
-    [Fact]
-    public void CreateClient_WithEndpointAndCredential_ReturnsQueueClient()
+    private sealed class OrderHandler : IQueueMessageHandler<TestObject>
     {
-        // arrange
-        var settings = new QueueClientSettings()
-        {
-            TokenCredential = new DefaultAzureCredential(),
-            EndpointUri = new Uri("https://fake.com/queue1"),
-        };
-        var subject = new QueueClientBuilder();
-
-        // act
-        var client = subject.CreateClient(Description, settings);
-
-        // assert
-        client.Name.Should().Be("queue1");
+        public ValueTask HandleAsync(QueueMessage<TestObject> message, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
 
     [Fact]
-    public void CreateClient_WithConnectionString_ReturnsQueueClient()
+    public void AddClient_ReturnsBuilderForThatClient()
     {
-        // arrange
-        var settings = new QueueClientSettings()
-        {
-            ConnectionString = "UseDevelopmentStorage=true",
-            QueueName = "queue1",
-        };
-        var subject = new QueueClientBuilder();
+        var services = new ServiceCollection();
+        IQueueClientBuilder? builder = null;
 
-        // act
-        var client = subject.CreateClient(Description, settings);
+        services.AddAzureStorageQueueClient(x => builder = x.AddClient("orders", y => y.ConnectionString = "UseDevelopmentStorage=true"));
 
-        // assert
-        client.Name.Should().Be("queue1");
+        builder!.Name.Should().Be("orders");
+        builder.Services.Should().BeSameAs(services);
     }
 
     [Fact]
-    public void CreateClient_WithoutUri_Throws()
+    public void AddDefaultClient_ReturnsBuilderWithDefaultName()
     {
-        // arrange
-        var settings = new QueueClientSettings()
-        {
-            TokenCredential = new DefaultAzureCredential(),
-            QueueName = "queue1",
-        };
-        var subject = new QueueClientBuilder();
+        var services = new ServiceCollection();
+        IQueueClientBuilder? builder = null;
 
-        // act & assert
-        subject.Invoking(x => x.CreateClient(Description, settings)).Should().Throw<ApplicationException>().WithMessage($"{Description}*");
+        services.AddAzureStorageQueueClient(x => builder = x.AddDefaultClient(y => y.ConnectionString = "UseDevelopmentStorage=true"));
+
+        builder!.Name.Should().Be(Options.DefaultName);
     }
 
     [Fact]
-    public void CreateClient_WithConnectionStringButNoQueueName_Throws()
+    public void UseJsonSerializer_SetsAPerClientSerializer()
     {
-        // arrange
-        var settings = new QueueClientSettings()
-        {
-            ConnectionString = "UseDevelopmentStorage=true",
-        };
-        var subject = new QueueClientBuilder();
+        var services = new ServiceCollection();
+        services.AddAzureStorageQueueClient(x =>
+            x.AddClient("orders", y => y.ConnectionString = "UseDevelopmentStorage=true")
+             .UseJsonSerializer(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
 
-        // act & assert
-        subject.Invoking(x => x.CreateClient(Description, settings)).Should().Throw<ApplicationException>().WithMessage("*QueueName*");
+        var settings = services.BuildServiceProvider().GetRequiredService<IOptionsMonitor<QueueClientSettings>>().Get("orders");
+
+        settings.Serializer.Should().NotBeNull();
+        settings.Serializer!.Serialize(new TestObject { Property1 = "v" }).ToString().Should().Contain("\"property1\"");
     }
 
     [Fact]
-    public void CreateClient_WithNothingConfigured_Throws()
+    public void Configure_RunsAfterTheRegistrationDelegate()
     {
-        // arrange
-        var settings = new QueueClientSettings()
-        {
-            QueueName = "queue1",
-        };
-        var subject = new QueueClientBuilder();
+        var services = new ServiceCollection();
+        services.AddAzureStorageQueueClient(x =>
+            x.AddClient("orders", y => y.QueueName = "first").Configure(y => y.QueueName = "second"));
 
-        // act & assert
-        subject.Invoking(x => x.CreateClient(Description, settings)).Should().Throw<ApplicationException>();
+        services.BuildServiceProvider().GetRequiredService<IOptionsMonitor<QueueClientSettings>>().Get("orders").QueueName.Should().Be("second");
+    }
+
+    [Fact]
+    public void AddProcessor_RegistersAHostedServicePerCall_AndAScopedHandler()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddAzureStorageQueueClient(x =>
+        {
+            x.AddClient("orders", y => y.ConnectionString = "UseDevelopmentStorage=true").AddProcessor<TestObject, OrderHandler>();
+            x.AddClient("returns", y => y.ConnectionString = "UseDevelopmentStorage=true").AddProcessor<TestObject, OrderHandler>(o => o.MaxConcurrentMessages = 3);
+        });
+        var provider = services.BuildServiceProvider();
+
+        provider.GetServices<IHostedService>().Should().HaveCount(2).And.AllBeOfType<QueueProcessor<TestObject, OrderHandler>>();
+        services.Should().Contain(d => d.ServiceType == typeof(OrderHandler) && d.Lifetime == ServiceLifetime.Scoped);
+
+        var options = provider.GetRequiredService<IOptionsMonitor<QueueProcessorOptions>>();
+        options.Get($"returns|{typeof(OrderHandler).FullName}").MaxConcurrentMessages.Should().Be(3);
+        options.Get($"orders|{typeof(OrderHandler).FullName}").MaxConcurrentMessages.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ValidateOnStart_FailsHostStartup_WhenAClientIsNotConfigured()
+    {
+        using var host = Host.CreateDefaultBuilder().ConfigureServices(services =>
+            services.AddAzureStorageQueueClient(x =>
+            {
+                x.AddClient("orders", y => y.QueueName = "orders"); // no connection string or endpoint
+                x.ValidateOnStart();
+            })).Build();
+
+        await host.Invoking(h => h.StartAsync()).Should().ThrowAsync<OptionsValidationException>().WithMessage("*'orders'*");
+    }
+
+    [Fact]
+    public async Task ValidateOnStart_AppliesToClientsRegisteredAfterIt()
+    {
+        using var host = Host.CreateDefaultBuilder().ConfigureServices(services =>
+            services.AddAzureStorageQueueClient(x =>
+            {
+                x.ValidateOnStart();
+                x.AddDefaultClient(y => y.QueueName = "orders");
+            })).Build();
+
+        await host.Invoking(h => h.StartAsync()).Should().ThrowAsync<OptionsValidationException>().WithMessage("*default*");
+    }
+
+    [Fact]
+    public async Task ValidateOnStart_StillRuns_WhenTheAppRegisteredItsOwnValidator()
+    {
+        using var host = Host.CreateDefaultBuilder().ConfigureServices(services =>
+        {
+            services.AddOptions<QueueClientSettings>("orders").Validate(_ => true); // registers another IValidateOptions<QueueClientSettings>
+            services.AddAzureStorageQueueClient(x =>
+            {
+                x.AddClient("orders", y => y.QueueName = "orders");
+                x.ValidateOnStart();
+            });
+        }).Build();
+
+        await host.Invoking(h => h.StartAsync()).Should().ThrowAsync<OptionsValidationException>().WithMessage("*'orders'*");
+    }
+
+    [Fact]
+    public async Task ValidateOnStart_FailsHostStartup_WhenThePoisonQueueNameIsInvalid()
+    {
+        using var host = Host.CreateDefaultBuilder().ConfigureServices(services =>
+            services.AddAzureStorageQueueClient(x =>
+            {
+                x.AddClient("orders", y => { y.ConnectionString = "UseDevelopmentStorage=true"; y.QueueName = "orders"; y.PoisonQueueName = "Bad_Name"; });
+                x.ValidateOnStart();
+            })).Build();
+
+        await host.Invoking(h => h.StartAsync()).Should().ThrowAsync<OptionsValidationException>().WithMessage("*PoisonQueueName*");
+    }
+
+    [Fact]
+    public async Task ValidateOnStart_FailsHostStartup_WhenTheDerivedPoisonQueueNameIsTooLong()
+    {
+        // R6: a 60-character queue name is valid, but "<name>-poison" is 67; a send-only host must find out at startup.
+        using var host = Host.CreateDefaultBuilder().ConfigureServices(services =>
+            services.AddAzureStorageQueueClient(x =>
+            {
+                x.AddClient("orders", y => { y.ConnectionString = "UseDevelopmentStorage=true"; y.QueueName = new string('a', 60); });
+                x.ValidateOnStart();
+            })).Build();
+
+        await host.Invoking(h => h.StartAsync()).Should().ThrowAsync<OptionsValidationException>().WithMessage("*poison*").WithMessage("*PoisonQueueName*");
+    }
+
+    [Fact]
+    public async Task ValidateOnStart_FailsHostStartup_WhenThePoisonQueueIsTheSourceQueue()
+    {
+        using var host = Host.CreateDefaultBuilder().ConfigureServices(services =>
+            services.AddAzureStorageQueueClient(x =>
+            {
+                x.AddDefaultClient(y => { y.EndpointUri = new Uri("https://account.queue.core.windows.net/orders"); y.TokenCredential = new Azure.Identity.DefaultAzureCredential(); y.PoisonQueueName = "orders"; });
+                x.ValidateOnStart();
+            })).Build();
+
+        await host.Invoking(h => h.StartAsync()).Should().ThrowAsync<OptionsValidationException>().WithMessage("*equal to its own queue name*");
+    }
+
+    [Fact]
+    public async Task ValidateOnStart_PassesForAConfiguredClient()
+    {
+        using var host = Host.CreateDefaultBuilder().ConfigureServices(services =>
+            services.AddAzureStorageQueueClient(x =>
+            {
+                x.AddClient("orders", y => { y.ConnectionString = "UseDevelopmentStorage=true"; y.QueueName = "orders"; });
+                x.ValidateOnStart();
+            })).Build();
+
+        await host.StartAsync();
+        await host.StopAsync();
     }
 }

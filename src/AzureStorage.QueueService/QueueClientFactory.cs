@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using Azure.Storage.Queues;
 using AzureStorage.QueueService.Telemetry;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -8,31 +9,31 @@ namespace AzureStorage.QueueService;
 internal sealed class QueueClientFactory : IQueueClientFactory
 {
     // Lazy<T> so two threads asking for the same client for the first time get one instance, not two.
-    private readonly ConcurrentDictionary<string, Lazy<AzureStorageQueueClient>> _clients = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Lazy<StorageQueue>> _queues = new(StringComparer.Ordinal);
     private readonly QueueClientSettingsRegistry _registry;
-    private readonly IOptionsMonitor<QueueClientSettings> _settings;
-    private readonly IQueueClientBuilder _queueClientBuilder;
+    private readonly IOptionsFactory<QueueClientSettings> _settings;
+    private readonly ISdkQueueClientFactory _sdkClients;
     private readonly ILoggerFactory _loggerFactory;
-    private readonly IMessageConverter _messageConverter;
-    private readonly IOptions<QueueServiceTelemetrySettings> _telemetrySettings;
+    private readonly IQueueMessageSerializer _serializer;
+    private readonly QueueServiceTelemetrySettings _telemetry;
 
     public QueueClientFactory(
         QueueClientSettingsRegistry registry,
-        IOptionsMonitor<QueueClientSettings> settings,
-        IQueueClientBuilder queueClientBuilder,
+        IOptionsFactory<QueueClientSettings> settings,
+        ISdkQueueClientFactory sdkClients,
         ILoggerFactory loggerFactory,
-        IMessageConverter messageConverter,
+        IQueueMessageSerializer serializer,
         IOptions<QueueServiceTelemetrySettings> telemetrySettingsOptions)
     {
         _registry = registry;
         _settings = settings;
-        _queueClientBuilder = queueClientBuilder;
+        _sdkClients = sdkClients;
         _loggerFactory = loggerFactory;
-        _messageConverter = messageConverter;
-        _telemetrySettings = telemetrySettingsOptions;
+        _serializer = serializer;
+        _telemetry = telemetrySettingsOptions.Value;
     }
 
-    public AzureStorageQueueClient GetQueueClient(string clientName)
+    public IStorageQueue GetQueue(string clientName)
     {
         ArgumentNullException.ThrowIfNull(clientName);
 
@@ -42,7 +43,7 @@ internal sealed class QueueClientFactory : IQueueClientFactory
                 ? "none"
                 : string.Join(", ", _registry.ClientNames.Select(name => $"'{name}'"));
 
-            throw new ApplicationException(
+            throw new InvalidOperationException(
                 $"No queue client named '{clientName}' has been registered (registered named clients: {registered}). " +
                 $"Register it with services.AddAzureStorageQueueClient(x => x.AddClient(\"{clientName}\", ...)).");
         }
@@ -50,37 +51,62 @@ internal sealed class QueueClientFactory : IQueueClientFactory
         return GetOrCreate(clientName);
     }
 
-    public AzureStorageQueueClient GetQueueClient()
+    public IStorageQueue GetQueue()
     {
         if (!_registry.HasDefaultClient)
         {
-            throw new ApplicationException(
+            throw new InvalidOperationException(
                 "No default queue client has been registered. Register one with " +
-                "services.AddAzureStorageQueueClient(x => x.AddDefaultClient(...)), or ask for a named client with GetQueueClient(name).");
+                "services.AddAzureStorageQueueClient(x => x.AddDefaultClient(...)), or ask for a named client by name.");
         }
 
         return GetOrCreate(Options.DefaultName);
     }
 
-    private AzureStorageQueueClient GetOrCreate(string clientName) =>
-        _clients.GetOrAdd(clientName, name => new Lazy<AzureStorageQueueClient>(() => Create(name), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+    private StorageQueue GetOrCreate(string clientName) =>
+        _queues.GetOrAdd(clientName, name => new Lazy<StorageQueue>(() => Create(name), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
 
-    private AzureStorageQueueClient Create(string clientName)
+    private StorageQueue Create(string clientName)
     {
-        var settings = _settings.Get(clientName);
+        // A snapshot: the settings a queue was built with are the settings it keeps.
+        var settings = _settings.Create(clientName);
         var description = clientName == Options.DefaultName ? "The default queue client" : $"Queue client '{clientName}'";
-        var queueClient = _queueClientBuilder.CreateClient(description, settings);
 
-        var messageConverter = settings.SerializerOptions is null
-            ? _messageConverter
-            : new JsonQueueMessageConverter(settings.SerializerOptions);
+        // The same check ValidateOnStart runs, so first use can never fail for something startup accepted.
+        if (settings.Validate() is { } error) throw new InvalidOperationException($"{description} {error}");
 
-        return new AzureStorageQueueClient(
-            messageConverter,
-            queueClient,
+        var sdkClient = _sdkClients.CreateClient(description, settings);
+        var poisonQueueName = settings.EffectivePoisonQueueName!;
+
+        QueueClient PoisonQueue() => _sdkClients.CreateClient($"{description} (poison queue '{poisonQueueName}')", ForSiblingQueue(settings, poisonQueueName));
+
+        return new StorageQueue(
+            sdkClient,
+            settings.Serializer ?? _serializer,
             _loggerFactory,
-            _telemetrySettings,
+            _telemetry,
             settings.VisibilityTimeout,
-            settings.CreateIfNotExists);
+            settings.CreateIfNotExists,
+            PoisonQueue);
+    }
+
+    // The same account and credentials, pointed at another queue. A destination only: no poison policy of its own.
+    internal static QueueClientSettings ForSiblingQueue(QueueClientSettings settings, string queueName) => new()
+    {
+        ConnectionString = settings.ConnectionString,
+        QueueName = settings.UsesConnectionString ? queueName : null,
+        EndpointUri = settings.EndpointUri is null ? null : SiblingQueueUri(settings.EndpointUri, queueName),
+        TokenCredential = settings.TokenCredential,
+        ClientOptions = settings.ClientOptions,
+    };
+
+    /// <summary>Replaces the last path segment of a queue URI, whether or not it ends with a slash.</summary>
+    internal static Uri SiblingQueueUri(Uri queueUri, string queueName)
+    {
+        var builder = new UriBuilder(queueUri);
+        var path = builder.Path.TrimEnd('/');
+        var lastSlash = path.LastIndexOf('/');
+        builder.Path = (lastSlash >= 0 ? path[..(lastSlash + 1)] : "/") + queueName;
+        return builder.Uri;
     }
 }
