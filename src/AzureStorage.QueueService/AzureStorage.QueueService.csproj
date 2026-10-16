@@ -10,7 +10,7 @@
 		<Company>Unifinity Software Corporation</Company>
 		<PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
-		<Description>A library used to read from an Azure Storage Queue. Use this package in combination with code samples for Azure Communication Services projects where Event Grid subscriptions from a storage queue are used.</Description>
+		<Description>Typed sending, receiving and processing for Azure Storage queues, registered like IHttpClientFactory clients. Includes a hosted processor with lease renewal, retries, a poison queue and graceful shutdown.</Description>
 		<Copyright>Unifinity Software Corporation</Copyright>
 		<PackageTags>Azure, Azure Storage, Azure Storage Queue, Storage Queue, Queue Service, Jason Shave, Unifinity Software Corporation</PackageTags>
 		<PackageProjectUrl>https://github.com/jasonshave/AzureStorage.QueueService</PackageProjectUrl>
