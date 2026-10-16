@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Azure.Messaging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -24,7 +25,7 @@ public sealed class QueueMessageRoutes
     /// Sends messages whose type header is <paramref name="messageType"/> (by default <typeparamref name="TMessage"/>'s
     /// name, which is what <see cref="QueueClientSettings.SendMessageType"/> sends) to <typeparamref name="THandler"/>.
     /// </summary>
-    public QueueMessageRoutes Route<TMessage, THandler>(string? messageType = null)
+    public QueueMessageRoutes Route<TMessage, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(string? messageType = null)
         where THandler : class, IQueueMessageHandler<TMessage>
     {
         var key = messageType ?? typeof(TMessage).Name;
@@ -55,7 +56,7 @@ public sealed class CloudEventRoutes
     internal Dictionary<string, ICloudEventRoute> Routes { get; } = new(StringComparer.Ordinal);
 
     /// <summary>Sends events whose <c>type</c> is <paramref name="eventType"/> to <typeparamref name="THandler"/>, with their data read as <typeparamref name="TData"/>.</summary>
-    public CloudEventRoutes Route<TData, THandler>(string eventType)
+    public CloudEventRoutes Route<TData, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(string eventType)
         where THandler : class, ICloudEventHandler<TData>
     {
         ArgumentException.ThrowIfNullOrEmpty(eventType);

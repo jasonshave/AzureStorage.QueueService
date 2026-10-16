@@ -15,7 +15,7 @@ internal sealed class SdkQueueClientFactory : ISdkQueueClientFactory
     {
     }
 
-    /// <param name="copyOptions">For tests: replaces the options copy, so the fallback can be exercised.</param>
+    // copyOptions: for tests, replaces the options copy, so the fallback can be exercised.
     internal SdkQueueClientFactory(ILogger<SdkQueueClientFactory>? logger, Func<QueueClientOptions, QueueClientOptions> copyOptions)
     {
         _logger = logger ?? NullLogger<SdkQueueClientFactory>.Instance;

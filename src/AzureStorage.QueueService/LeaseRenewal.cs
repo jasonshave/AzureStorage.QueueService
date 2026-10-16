@@ -22,6 +22,9 @@ internal sealed class LeaseRenewal : IAsyncDisposable
         _loop = RunAsync(renewAsync, isSettled, interval, time, _stopWaiting.Token, onFailed, maxDuration, onLimitReached);
     }
 
+    /// <param name="interval">How long to wait before each renewal.</param>
+    /// <param name="time">The clock the waits use.</param>
+    /// <param name="onFailed">Called once if a renewal fails; renewal stops there.</param>
     /// <param name="renewAsync">Renews the lease once. Must not observe a cancellation token: an accepted renewal changes the receipt, so the response must be read.</param>
     /// <param name="isSettled">True once the message no longer needs renewing.</param>
     /// <param name="stopAll">The processor-wide signal that ends every renewal, for example at shutdown.</param>

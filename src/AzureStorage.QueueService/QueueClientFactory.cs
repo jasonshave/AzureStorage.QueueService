@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using Azure.Storage.Queues;
 using AzureStorage.QueueService.Telemetry;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,8 +22,8 @@ internal sealed class QueueClientFactory : IQueueClientFactory
     private readonly IServiceProvider? _services;
     private readonly TimeProvider _time;
 
-    /// <param name="inMemory">Registered only by <c>AddInMemoryQueues</c>; when present, every client is an in-memory queue.</param>
-    /// <param name="services">For a large message store registered with <c>UseLargeMessageStore(provider => ...)</c>.</param>
+    // inMemory: registered only by AddInMemoryQueues; when present, every client is an in-memory queue.
+    // services: for a large message store registered with UseLargeMessageStore(provider => ...).
     public QueueClientFactory(
         QueueClientSettingsRegistry registry,
         IOptionsFactory<QueueClientSettings> settings,

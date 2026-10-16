@@ -9,7 +9,7 @@ public delegate ValueTask QueueMessageDelegate(QueueMessageContext context);
 /// Resolved from the message's own dependency-injection scope, so it can take scoped services.
 /// </summary>
 /// <remarks>
-/// Call <paramref name="next"/> to go on to the handler, or return without calling it to stop there: the processor then
+/// Call <c>next</c> to go on to the handler, or return without calling it to stop there: the processor then
 /// treats the message as handled (with <see cref="QueueProcessorOptions.AutoComplete"/> on, it is completed). Throw and
 /// the message counts as failed, exactly as if the handler had thrown. A middleware can settle the message itself
 /// through <see cref="QueueMessageContext.Message"/>. Register it with <c>UseMiddleware&lt;T&gt;()</c> on one client's

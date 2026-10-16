@@ -12,6 +12,7 @@ public interface IQueueClientBuilder
     /// <summary>The registered name; <see cref="Microsoft.Extensions.Options.Options.DefaultName"/> for the default client.</summary>
     string Name { get; }
 
+    /// <summary>The application's services, for extension methods to register what they need.</summary>
     IServiceCollection Services { get; }
 }
 

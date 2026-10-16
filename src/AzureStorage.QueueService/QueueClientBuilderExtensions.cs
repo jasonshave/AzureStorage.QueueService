@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Azure.Messaging;
 using AzureStorage.QueueService.Telemetry;
@@ -98,7 +99,7 @@ public static class QueueClientBuilderExtensions
     /// Runs <typeparamref name="TMiddleware"/> around every message this client's processors deliver, resolved from the
     /// message's scope (registered as scoped unless you registered it yourself). See <see cref="IQueueMessageMiddleware"/>.
     /// </summary>
-    public static IQueueClientBuilder UseMiddleware<TMiddleware>(this IQueueClientBuilder builder)
+    public static IQueueClientBuilder UseMiddleware<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TMiddleware>(this IQueueClientBuilder builder)
         where TMiddleware : class, IQueueMessageMiddleware
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -127,7 +128,7 @@ public static class QueueClientBuilderExtensions
     /// host startup on purpose; runtime failures never stop the host. Registering the same handler on the same client
     /// again adds to its options; it does not start a second processor.
     /// </summary>
-    public static IQueueClientBuilder AddProcessor<TMessage, THandler>(this IQueueClientBuilder builder, Action<QueueProcessorOptions>? configure = null)
+    public static IQueueClientBuilder AddProcessor<TMessage, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(this IQueueClientBuilder builder, Action<QueueProcessorOptions>? configure = null)
         where THandler : class, IQueueMessageHandler<TMessage>
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -141,13 +142,13 @@ public static class QueueClientBuilderExtensions
     /// options bound from <paramref name="configuration"/> (for example <c>configuration.GetSection("Queues:Orders:Processor")</c>)
     /// and then <paramref name="configure"/>, so <c>MaxConcurrentMessages</c> and the rest can differ by environment.
     /// </summary>
-    public static IQueueClientBuilder AddProcessor<TMessage, THandler>(this IQueueClientBuilder builder, IConfiguration configuration, Action<QueueProcessorOptions>? configure = null)
+    public static IQueueClientBuilder AddProcessor<TMessage, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(this IQueueClientBuilder builder, IConfiguration configuration, Action<QueueProcessorOptions>? configure = null)
         where THandler : class, IQueueMessageHandler<TMessage>
     {
         ArgumentNullException.ThrowIfNull(configuration);
         return builder.AddProcessor<TMessage, THandler>(options =>
         {
-            configuration.Bind(options);
+            BindProcessorOptions(configuration, options);
             configure?.Invoke(options);
         });
     }
@@ -186,7 +187,7 @@ public static class QueueClientBuilderExtensions
     /// read as <typeparamref name="TData"/> counts as an unreadable body (see
     /// <see cref="QueueProcessorOptions.DeadLetterOnDeserializationFailure"/>).
     /// </summary>
-    public static IQueueClientBuilder AddCloudEventProcessor<TData, THandler>(this IQueueClientBuilder builder, Action<QueueProcessorOptions>? configure = null)
+    public static IQueueClientBuilder AddCloudEventProcessor<TData, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(this IQueueClientBuilder builder, Action<QueueProcessorOptions>? configure = null)
         where THandler : class, ICloudEventHandler<TData>
     {
         ArgumentNullException.ThrowIfNull(builder);
@@ -200,13 +201,13 @@ public static class QueueClientBuilderExtensions
     }
 
     /// <summary>As <see cref="AddCloudEventProcessor{TData, THandler}(IQueueClientBuilder, Action{QueueProcessorOptions}?)"/>, with the options bound from <paramref name="configuration"/> first.</summary>
-    public static IQueueClientBuilder AddCloudEventProcessor<TData, THandler>(this IQueueClientBuilder builder, IConfiguration configuration, Action<QueueProcessorOptions>? configure = null)
+    public static IQueueClientBuilder AddCloudEventProcessor<TData, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(this IQueueClientBuilder builder, IConfiguration configuration, Action<QueueProcessorOptions>? configure = null)
         where THandler : class, ICloudEventHandler<TData>
     {
         ArgumentNullException.ThrowIfNull(configuration);
         return builder.AddCloudEventProcessor<TData, THandler>(options =>
         {
-            configuration.Bind(options);
+            BindProcessorOptions(configuration, options);
             configure?.Invoke(options);
         });
     }
@@ -252,6 +253,10 @@ public static class QueueClientBuilderExtensions
             HandlerName: "CloudEvent router",
             AfterDeserialize: ReadWithClientSerializer<CloudEvent>(provider, serializer, (message, s) => CloudEventRoutingHandler.Read(message, table.Routes, s))));
     }
+
+    // Source-generated, so it is trim- and AOT-safe. The generator skips what configuration cannot hold (the callbacks
+    // and RateLimiter), as reflection binding would.
+    private static void BindProcessorOptions(IConfiguration configuration, QueueProcessorOptions options) => configuration.Bind(options);
 
     private static string Describe(IQueueClientBuilder builder) => builder.Name.Length == 0 ? "The default queue client" : $"Queue client '{builder.Name}'";
 

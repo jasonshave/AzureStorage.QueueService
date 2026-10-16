@@ -1,7 +1,11 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 
 namespace AzureStorage.QueueService.Telemetry;
 
+/// <summary>
+/// Spans that are off by default because they are noisy: one per individual send and receive. The processor's
+/// <c>Queue.Process</c> span is always on. Set with <c>ConfigureQueueServiceTelemetry</c>.
+/// </summary>
 public class QueueServiceTelemetrySettings
 {
     /// <summary>

@@ -21,10 +21,10 @@ internal interface IQueueTransport
 
     ValueTask CreateIfNotExistsAsync(IDictionary<string, string>? metadata, CancellationToken cancellationToken);
 
-    /// <param name="timeToLive">In the service's terms: -1 second for never.</param>
+    // timeToLive is in the service's terms: -1 second for never.
     ValueTask<SendReceipt> SendAsync(BinaryData body, TimeSpan? visibilityTimeout, TimeSpan? timeToLive, CancellationToken cancellationToken);
 
-    /// <param name="visibilityTimeout">Null for the service's default of 30 seconds.</param>
+    // visibilityTimeout: null for the service's default of 30 seconds.
     ValueTask<IReadOnlyList<TransportMessage>> ReceiveAsync(int maxMessages, TimeSpan? visibilityTimeout, CancellationToken cancellationToken);
 
     ValueTask<IReadOnlyList<TransportMessage>> PeekAsync(int maxMessages, CancellationToken cancellationToken);
@@ -148,7 +148,7 @@ internal sealed class InMemoryQueueTransport : IQueueTransport
 
     private readonly InMemoryQueue _queue;
 
-    /// <param name="base64Encoded">What the client's options say, so the size limit is checked as it would be in production.</param>
+    // base64Encoded: what the client's options say, so the size limit is checked as it would be in production.
     public InMemoryQueueTransport(InMemoryQueue queue, bool base64Encoded)
     {
         _queue = queue;

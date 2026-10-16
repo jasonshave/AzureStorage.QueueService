@@ -6,6 +6,7 @@ namespace AzureStorage.QueueService;
 /// </summary>
 public interface IQueueMessageOperations
 {
+    /// <summary>Deletes the message: what <see cref="QueueMessage{T}.CompleteAsync"/> does.</summary>
     ValueTask DeleteAsync(string messageId, string popReceipt, CancellationToken cancellationToken);
 
     /// <summary>

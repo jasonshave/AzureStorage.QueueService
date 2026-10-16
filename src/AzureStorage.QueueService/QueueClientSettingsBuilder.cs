@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Azure.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -51,12 +52,20 @@ public class QueueClientSettingsBuilder
 
     /// <summary>
     /// Registers a named client bound from a configuration section, for example
-    /// <c>configuration.GetSection("Queues:Orders")</c>.
+    /// <c>configuration.GetSection("Queues:Orders")</c>. Every setting that has a value in configuration can be bound,
+    /// including <c>"ClientOptions": { "MessageEncoding": "Base64" }</c>; the credential, serializer and large message
+    /// store are set in code.
     /// </summary>
+    /// <remarks>
+    /// Binding uses reflection, which trimming and native AOT cannot see through; in such an application, set the
+    /// settings in code with <see cref="AddClient(string, Action{QueueClientSettings})"/> instead.
+    /// </remarks>
+    [RequiresUnreferencedCode(BindingMessage)]
+    [RequiresDynamicCode(BindingMessage)]
     public IQueueClientBuilder AddClient(string clientName, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        return AddClient(clientName, settings => configuration.Bind(settings));
+        return AddClient(clientName, settings => Bind(configuration, settings));
     }
 
     /// <summary>
@@ -79,12 +88,27 @@ public class QueueClientSettingsBuilder
     }
 
     /// <summary>
-    /// Registers the default client bound from a configuration section.
+    /// Registers the default client bound from a configuration section. See <see cref="AddClient(string, IConfiguration)"/>.
     /// </summary>
+    [RequiresUnreferencedCode(BindingMessage)]
+    [RequiresDynamicCode(BindingMessage)]
     public IQueueClientBuilder AddDefaultClient(IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        return AddDefaultClient(settings => configuration.Bind(settings));
+        return AddDefaultClient(settings => Bind(configuration, settings));
+    }
+
+    private const string BindingMessage = "Binds QueueClientSettings from configuration with reflection. In a trimmed or native AOT application, set the settings in code with the Action<QueueClientSettings> overload.";
+
+    // Reflection binding on purpose, not the source generator this project uses for processor options: the generator
+    // cannot create or fill QueueClientOptions, so "ClientOptions": { "MessageEncoding": "Base64" } would be silently
+    // ignored. Through a delegate, because the generator replaces direct calls to Bind.
+    [RequiresUnreferencedCode(BindingMessage)]
+    [RequiresDynamicCode(BindingMessage)]
+    private static void Bind(IConfiguration configuration, QueueClientSettings settings)
+    {
+        Action<IConfiguration, object?> bind = ConfigurationBinder.Bind;
+        bind(configuration, settings);
     }
 
     /// <summary>
@@ -166,7 +190,7 @@ public class QueueClientSettingsBuilder
     /// Runs <typeparamref name="TMiddleware"/> around every message every client's processors deliver, resolved from the
     /// message's scope (registered as scoped unless you registered it yourself). See <see cref="IQueueMessageMiddleware"/>.
     /// </summary>
-    public QueueClientSettingsBuilder UseMiddleware<TMiddleware>()
+    public QueueClientSettingsBuilder UseMiddleware<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TMiddleware>()
         where TMiddleware : class, IQueueMessageMiddleware
     {
         Services.TryAddScoped<TMiddleware>();
