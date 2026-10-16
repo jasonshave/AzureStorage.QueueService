@@ -877,6 +877,25 @@ public class QueueProcessorTests(ITestOutputHelper output)
         h.Queue.Receives[0].Take.Should().Be(2, "five handlers are free but only two permits are");
     }
 
+    [Fact(DisplayName = "With a rate limiter that has a permit for every free handler, messages are still received and handled")]
+    public async Task Rate_Limiter_With_Permits_To_Spare()
+    {
+        using var limiter = new System.Threading.RateLimiting.TokenBucketRateLimiter(new System.Threading.RateLimiting.TokenBucketRateLimiterOptions
+        {
+            TokenLimit = 10,
+            TokensPerPeriod = 1,
+            ReplenishmentPeriod = TimeSpan.FromHours(1),
+            AutoReplenishment = false,
+        });
+        await using var h = new Harness(output, o => o.RateLimiter = limiter);
+        h.Queue.Then(h.Message("1"));
+
+        await h.StartAsync();
+        await h.Ops.WaitForAsync("delete");
+
+        h.Logs.Entries.Should().NotContain(e => e.Level >= LogLevel.Error, "no slot is left to give back, and that is not a failed receive");
+    }
+
     [Fact(DisplayName = "MaxRenewalDuration stops renewing a handler's lease and says so, so a hung handler cannot hide its message for ever")]
     public async Task Renewal_Stops_At_MaxRenewalDuration()
     {

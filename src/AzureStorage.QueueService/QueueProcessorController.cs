@@ -54,8 +54,8 @@ public enum QueueProcessorState
 /// <param name="HandlerName">The handler, as it appears in logs.</param>
 /// <param name="MessageType">The type it reads bodies as.</param>
 /// <param name="State">Where it is in its life.</param>
-/// <param name="ActiveHandlers">Messages being delivered right now.</param>
-/// <param name="MaxConcurrentMessages">The most it delivers at once.</param>
+/// <param name="ActiveHandlers">Messages being delivered right now; for a batch processor, the messages in the batches being handled.</param>
+/// <param name="MaxConcurrentMessages">The most messages it delivers at once; for a batch processor, <see cref="QueueBatchProcessorOptions.MaxConcurrentBatches"/> × <see cref="QueueBatchProcessorOptions.MaxBatchSize"/>.</param>
 /// <param name="LastReceiveSucceededAt">When a receive last succeeded, empty or not; null before the first.</param>
 /// <param name="LastReceiveFailedAt">When a receive last failed; null if none has.</param>
 /// <param name="ConsecutiveReceiveFailures">Receives that have failed in a row; 0 after a success.</param>

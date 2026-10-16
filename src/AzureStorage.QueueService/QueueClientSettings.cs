@@ -39,7 +39,7 @@ public class QueueClientSettings
     /// <summary>
     /// How long a message received with <see cref="IQueueReceiver.ReceiveAsync{T}"/> stays hidden from other consumers
     /// when the call does not say. When not set, the service default of 30 seconds applies. A processor uses its own
-    /// <see cref="QueueProcessorOptions.VisibilityTimeout"/> instead.
+    /// <see cref="QueueProcessorOptionsBase.VisibilityTimeout"/> instead.
     /// </summary>
     public TimeSpan? VisibilityTimeout { get; set; }
 

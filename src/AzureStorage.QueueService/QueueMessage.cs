@@ -61,7 +61,7 @@ public interface IQueueMessage
 
     /// <summary>
     /// True when a processor will not retry this message if the handler fails: this is its last delivery before
-    /// <see cref="QueueProcessorOptions.MaxDequeueCount"/> moves it to the poison queue. Always false for a message
+    /// <see cref="QueueProcessorOptionsBase.MaxDequeueCount"/> moves it to the poison queue. Always false for a message
     /// received with <see cref="IQueueReceiver.ReceiveAsync{T}"/>, which has no retry limit of its own.
     /// </summary>
     bool IsLastAttempt { get; }
@@ -230,7 +230,7 @@ public sealed class QueueMessage<T> : IQueueMessage
 /// <summary>The bounded set of reasons the library records for a dead-lettered message, for metrics and replay filters.</summary>
 public static class DeadLetterCategories
 {
-    /// <summary>Delivered more than <see cref="QueueProcessorOptions.MaxDequeueCount"/> times.</summary>
+    /// <summary>Delivered more than <see cref="QueueProcessorOptionsBase.MaxDequeueCount"/> times.</summary>
     public const string MaxDequeueCount = "max_dequeue";
 
     /// <summary>The body could not be decoded, unwrapped, downloaded or deserialized.</summary>

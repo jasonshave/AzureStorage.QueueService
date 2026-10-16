@@ -113,6 +113,19 @@ internal static partial class LoggerMessageExtensions
     public static IDisposable? BeginDeliveryScope(this ILogger logger, string queueName, string messageId, long dequeueCount) =>
         DeliveryScope(logger, queueName, messageId, dequeueCount);
 
+    private static readonly Func<ILogger, string, int, string, IDisposable?> BatchDeliveryScope =
+        LoggerMessage.DefineScope<string, int, string>("Queue {QueueName}, batch of {MessageCount} message(s): {MessageIds}");
+
+    /// <summary>A scope for everything logged while one batch is delivered, the handler's own logs included.</summary>
+    public static IDisposable? BeginBatchDeliveryScope(this ILogger logger, string queueName, int messageCount, string messageIds) =>
+        BatchDeliveryScope(logger, queueName, messageCount, messageIds);
+
+    [LoggerMessage(46, LogLevel.Warning, "Processor {Processor}: the handler for a batch of {MessageCount} message(s) has been running for {Elapsed}, longer than LongRunningHandlerWarning ({Threshold}). It may be hung; their leases are still being renewed{RenewalNote}.")]
+    public static partial void LogProcessorBatchHandlerLongRunning(this ILogger logger, string processor, int messageCount, TimeSpan elapsed, TimeSpan threshold, string renewalNote);
+
+    [LoggerMessage(47, LogLevel.Warning, "Queue '{QueueName}': the batch handler settled all {MessageCount} message(s) of its batch and then threw. The settlements stand.")]
+    public static partial void LogBatchHandlerFailedAfterSettling(this ILogger logger, string? queueName, int messageCount, Exception exception);
+
     [LoggerMessage(45, LogLevel.Warning, "{Client}: could not make a private copy of its QueueClientOptions, so the Base64 decoding handler is added to the caller's options while the SDK client is built, then removed. A QueueClient the application builds from the same options object at that moment may pick it up. Logged once.")]
     public static partial void LogClientOptionsCopyFailed(this ILogger logger, string client, Exception exception);
 }

@@ -14,7 +14,7 @@ Still on .NET 8? Use the 2.x package line, which stays on .NET 8 and keeps recei
 
 - **Send** with `IQueueSender`: your object goes in, JSON goes on the queue, with optional headers, a delay and compression.
 - **Receive** with `IQueueReceiver`: each message comes back typed, with its identity, and you complete, abandon or dead-letter it.
-- **Process** with `AddProcessor<TMessage, THandler>()`: the library runs the loop — backoff, lease renewal, retries, a poison queue, cancellation and graceful shutdown — and hands each message to a handler resolved from its own dependency-injection scope. Handlers can be classes or lambdas, share middleware, and share one queue between several message types.
+- **Process** with `AddProcessor<TMessage, THandler>()`: the library runs the loop — backoff, lease renewal, retries, a poison queue, cancellation and graceful shutdown — and hands each message to a handler resolved from its own dependency-injection scope. Handlers can be classes or lambdas, share middleware, and share one queue between several message types. `AddBatchProcessor<TMessage, THandler>()` hands them over up to 32 at a time instead.
 - **Look after the poison queue** with `IDeadLetterQueue`: see what was dead-lettered and why, and move messages back once the cause is fixed.
 
 Upgrading? See [Upgrading from 3.0 to 3.1](#upgrading-from-30-to-31) for the breaking and behaviour changes, or [Upgrading from 2.x](#upgrading-from-2x) for the mapping from the old API.
@@ -292,7 +292,45 @@ builder.Services.AddAzureStorageQueueClient(queues =>
 });
 ```
 
-Middleware runs in the order registered. Not calling `next` stops there, and the message counts as handled (completed, with `AutoComplete` on). An exception counts as a handler failure, error policy included. `context.Items` passes things along; `context.Services` is the message's scope.
+Middleware runs in the order registered. Not calling `next` stops there, and the message counts as handled (completed, with `AutoComplete` on). An exception counts as a handler failure, error policy included. `context.Items` passes things along; `context.Services` is the message's scope. Middleware does not run for [batch handlers](#batch-handlers).
+
+### Batch handlers
+
+When the work is cheaper in bulk — inserting rows, calling an API that takes many items — handle a batch per call instead of one message at a time. Each receive takes up to `MaxBatchSize` messages (32, the most one receive can return) and hands them to one handler call in one dependency-injection scope:
+
+```csharp
+public class OrderBatchHandler(OrdersDbContext db) : IQueueBatchHandler<Order>
+{
+    public async ValueTask HandleAsync(IReadOnlyList<QueueMessage<Order>> messages, CancellationToken cancellationToken)
+    {
+        foreach (var message in messages.Where(m => m.Body!.Total < 0))
+            await message.DeadLetterAsync("negative total", cancellationToken);    // settle one yourself
+
+        db.Orders.AddRange(messages.Where(m => !m.IsSettled).Select(m => m.Body!));
+        await db.SaveChangesAsync(cancellationToken);
+        // Return and every message you didn't settle is completed. Throw and none of them are.
+    }
+}
+
+queues.AddClient("orders", builder.Configuration.GetSection("Queues:Orders"))
+      .AddBatchProcessor<Order, OrderBatchHandler>(options =>
+      {
+          options.MaxBatchSize = 20;
+          options.MaxConcurrentBatches = 2;    // two batches in flight, so at most 40 messages held
+      });
+```
+
+A batch is whatever one receive returns, so it is smaller when fewer messages are waiting; the processor never waits to fill one. Everything else works per message, as it does for a single-message processor:
+
+- **Leases.** Every message's lease is renewed from the moment it is received, before any body is read, until it is settled.
+- **Poison messages are left out.** A message whose body can't be read (including one whose body in Blob storage can't be downloaded) or that has been delivered more than `MaxDequeueCount` times is dead-lettered on its own and is not in the list the handler gets. If none are left, the handler isn't called.
+- **Returning** completes every message the handler didn't settle (with `AutoComplete` on, the default).
+- **Throwing** applies the [error policy](#error-policy) to each message the handler hadn't settled — `DeadLetterOn<TException>()` first, then `OnHandlerError`, which is asked once per message — and otherwise abandons each with the `RetryDelay` for its own dequeue count. Messages the handler had already settled stay settled.
+- **Shutdown** is the same: the handler's token is cancelled after `ShutdownDrainTimeout`, and the messages it hadn't settled go straight back to the queue.
+
+`QueueBatchProcessorOptions` has every option in the table above except `MaxConcurrentMessages`, plus `MaxBatchSize` (1 to 32, default 32) and `MaxConcurrentBatches` (default 1). A `RateLimiter` still takes one permit per message, so it can make a batch smaller. The `IConfiguration` overload works the same way as `AddProcessor`'s.
+
+Middleware does not run for batch processors: it is built around one message (`QueueMessageContext.Message`), and running it once per message would not wrap the one call that does the work. Put cross-cutting code in the handler, or in a service it calls. Each batch gets one `Queue.Process` span with `messaging.batch.message_count`, linked to each sender's trace; per-message metrics (processing duration with its outcome, failures, dead-letters, time in queue) are recorded for every message, and `IQueueProcessorController.GetStatus()` counts the messages in flight.
 
 ### Several message types on one queue
 
@@ -498,7 +536,7 @@ builder.Services.AddOpenTelemetry()
     .WithMetrics(m => m.AddAzureStorageQueueMetrics());
 ```
 
-The processor emits a `Queue.Process` span (kind: consumer) per message, tagged with the queue name, message id, dequeue count and outcome, with events when the message is renewed, completed, abandoned or dead-lettered. `Queue.Read` (client) and `Queue.Send` (producer) spans for individual receives and sends are off by default because they are noisy; turn them on with `ConfigureQueueServiceTelemetry`. A span whose operation failed is marked with an error status and `error.type`. Spans also carry the [OpenTelemetry messaging attributes](https://opentelemetry.io/docs/specs/semconv/messaging/) — `messaging.system` (`azure.storage.queue`), `messaging.destination.name`, `messaging.operation.type` / `.name`, `messaging.message.id`, `messaging.batch.message_count`, `server.address` / `server.port` — so App Insights and Grafana's messaging views recognise them.
+The processor emits a `Queue.Process` span (kind: consumer) per message (per batch for a [batch handler](#batch-handlers)), tagged with the queue name, message id, dequeue count and outcome, with events when the message is renewed, completed, abandoned or dead-lettered. `Queue.Read` (client) and `Queue.Send` (producer) spans for individual receives and sends are off by default because they are noisy; turn them on with `ConfigureQueueServiceTelemetry`. A span whose operation failed is marked with an error status and `error.type`. Spans also carry the [OpenTelemetry messaging attributes](https://opentelemetry.io/docs/specs/semconv/messaging/) — `messaging.system` (`azure.storage.queue`), `messaging.destination.name`, `messaging.operation.type` / `.name`, `messaging.message.id`, `messaging.batch.message_count`, `server.address` / `server.port` — so App Insights and Grafana's messaging views recognise them.
 
 **Metrics,** all tagged with `queue.name`:
 
@@ -509,7 +547,7 @@ The processor emits a `Queue.Process` span (kind: consumer) per message, tagged 
 | `queue_message_size_bytes` | Histogram of what the serializer wrote, before any envelope. Buckets up to 64 KiB. |
 | `queue_message_time_in_queue_seconds` | Histogram: how long a message waited before a processor started on it, measured from when it was first sent (retries included). The best "are we keeping up" signal, and it costs nothing. |
 | `queue_receive_requests_total` | Receive calls, tagged `queue.receive_result`: `message`, `empty` or `error`. Every one is a billable transaction, empty polls included. |
-| `queue_processor_active_handlers` | Handlers running now; compare with `MaxConcurrentMessages` for saturation. |
+| `queue_processor_active_handlers` | Messages being handled now (for a batch processor, the messages in its running batches); compare with `MaxConcurrentMessages`, or `MaxConcurrentBatches` × `MaxBatchSize`, for saturation. |
 | `queue_processor_oldest_handler_age_seconds` | Gauge: the longest-running handler. A value that keeps growing is a hung handler. |
 | `queue_lease_renewals_total`, `queue_lease_renewal_failures_total` | Renewals, and renewals that failed (that message will be redelivered). |
 | `queue_messages_dead_lettered_total` | Dead-lettered messages, tagged `queue.dead_letter_reason`. |
@@ -566,6 +604,8 @@ Lambda handlers are fine: their parameters are read from the delegate itself.
 - **The default serializer writes camelCase JSON:** `{"orderId":42}` where 3.0 wrote `{"OrderId":42}`. It now uses System.Text.Json's web defaults (`JsonSerializerDefaults.Web`), which also read property names case-insensitively, so messages from 3.0 senders still arrive intact, and a camelCase message no longer fills none of a PascalCase type's properties and gets completed as if it were fine. Numbers written as strings (`"42"`) are read too. What changes is what other readers of the queue see: an Azure Function, script or service that expects PascalCase names gets empty fields. To keep writing PascalCase, give the client `UseJsonSerializer(new JsonSerializerOptions { PropertyNameCaseInsensitive = true })`, or pass those options as `serializerOptions` to `AddAzureStorageQueueClient` for every client. Options you pass are used exactly as given.
 
 Recompile, and these are the behaviour changes to know about:
+
+- **New: batch handlers.** `AddBatchProcessor<TMessage, THandler>()` with an `IQueueBatchHandler<TMessage>` hands a handler up to 32 messages per call; see [Batch handlers](#batch-handlers). The options every processor shares moved to a new base class, `QueueProcessorOptionsBase`, which `QueueProcessorOptions` and the new `QueueBatchProcessorOptions` derive from. Code that sets the options doesn't change.
 
 - **Poison messages no longer expire after 7 days.** They used to take the service's default time to live and could disappear unseen; now they stay until deleted or replayed, or for `PoisonTimeToLive`.
 - **A poison message records why it was dead-lettered**, so the copy on the poison queue is now an envelope around the original body. A 3.1 reader (and `IDeadLetterQueue`) reads it; a tool that read poison messages as plain JSON sees the envelope. Moving one back by hand still works for 3.1 receivers, but `ReplayAsync` is the clean way: it strips the record.
