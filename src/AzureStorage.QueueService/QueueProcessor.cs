@@ -95,11 +95,11 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
     private volatile QueueProcessorState _state = QueueProcessorState.NotStarted;
     private bool _pausedLogged;
 
-    // Receive health, for status. Written by the receive loop only.
-    private DateTimeOffset? _lastReceiveSucceededAt;
-    private DateTimeOffset? _lastReceiveFailedAt;
-    private int _consecutiveReceiveFailures;
-    private string? _lastReceiveError;
+    // Receive health, for status: written by the receive loop only, and replaced as a whole so a reader on another
+    // thread (a health probe) never sees half of an update.
+    private volatile ReceiveHealth _health = new(null, null, 0, null);
+
+    private sealed record ReceiveHealth(DateTimeOffset? SucceededAt, DateTimeOffset? FailedAt, int ConsecutiveFailures, string? LastError);
 
     public QueueProcessor(
         string clientName,
@@ -281,16 +281,19 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
     public QueueProcessorStatus GetStatus()
     {
         var state = _state == QueueProcessorState.Running && _controller?.IsPaused(_clientName) == true ? QueueProcessorState.Paused : _state;
-        TimeSpan? oldest = _deliveries.IsEmpty ? null : _time.GetElapsedTime(_deliveries.Values.Min(d => d.Started));
+        var deliveries = _deliveries.Values.ToList();
+        TimeSpan? oldest = deliveries.Count == 0 ? null : _time.GetElapsedTime(deliveries.Min(d => d.Started));
+        var health = _health;
         return new QueueProcessorStatus(
-            _clientName, QueueName, _handlerName, typeof(TMessage), state, _deliveries.Count, _options.MaxConcurrentMessages,
-            _lastReceiveSucceededAt, _lastReceiveFailedAt, _consecutiveReceiveFailures, _lastReceiveError, oldest);
+            _clientName, QueueName, _handlerName, typeof(TMessage), state, deliveries.Count, _options.MaxConcurrentMessages,
+            health.SucceededAt, health.FailedAt, health.ConsecutiveFailures, health.LastError, oldest);
     }
 
     private IEnumerable<Measurement<double>> ObserveOldestHandler()
     {
         // 0 when idle, so the series is there to alert on before anything hangs.
-        var oldest = _deliveries.IsEmpty ? 0 : _time.GetElapsedTime(_deliveries.Values.Min(d => d.Started)).TotalSeconds;
+        var started = _deliveries.Values.Select(d => d.Started).ToList();
+        var oldest = started.Count == 0 ? 0 : _time.GetElapsedTime(started.Min()).TotalSeconds;
         yield return new Measurement<double>(oldest, new KeyValuePair<string, object?>(QueueServiceDiagnostics.Names.QueueName, QueueName));
     }
 
@@ -299,6 +302,18 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
     // ------------------------------------------------------------------------------------------------------------
 
     private async Task ReceiverAsync(CancellationToken stop)
+    {
+        try
+        {
+            await ReceiveWithRestartsAsync(stop);
+        }
+        finally
+        {
+            if (!stop.IsCancellationRequested) _state = QueueProcessorState.Stopped;
+        }
+    }
+
+    private async Task ReceiveWithRestartsAsync(CancellationToken stop)
     {
         while (!stop.IsCancellationRequested)
         {
@@ -354,9 +369,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
                     ? await owned.ReceiveForProcessingAsync<TMessage>(take, _options.VisibilityTimeout, stop)
                     : await queue.ReceiveAsync<TMessage>(take, _options.VisibilityTimeout, stop);
 
-                _lastReceiveSucceededAt = _time.GetUtcNow();
-                _consecutiveReceiveFailures = 0;
-                _lastReceiveError = null;
+                _health = new ReceiveHealth(_time.GetUtcNow(), _health.FailedAt, 0, null);
                 errorBackoff = _options.EmptyQueueBackoffMin;
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested)
@@ -367,9 +380,7 @@ internal sealed class QueueProcessor<TMessage, THandler> : IHostedService, IHost
             catch (Exception ex)
             {
                 slots.Release(take);
-                _lastReceiveFailedAt = _time.GetUtcNow();
-                _consecutiveReceiveFailures++;
-                _lastReceiveError = ex.Message;
+                _health = _health with { FailedAt = _time.GetUtcNow(), ConsecutiveFailures = _health.ConsecutiveFailures + 1, LastError = ex.Message };
 
                 // Transport failures, a missing queue, no permission: log once, back off, keep going.
                 if (ex is RequestFailedException { ErrorCode: var code } && code == QueueErrorCode.QueueNotFound)
