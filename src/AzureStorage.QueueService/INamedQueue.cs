@@ -6,5 +6,6 @@ namespace AzureStorage.QueueService;
 /// </summary>
 public interface INamedQueue
 {
+    /// <summary>The name of the queue on the service.</summary>
     string QueueName { get; }
 }

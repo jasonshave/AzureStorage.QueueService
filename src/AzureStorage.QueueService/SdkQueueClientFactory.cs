@@ -15,7 +15,7 @@ internal sealed class SdkQueueClientFactory : ISdkQueueClientFactory
     {
     }
 
-    /// <param name="copyOptions">For tests: replaces the options copy, so the fallback can be exercised.</param>
+    // copyOptions: for tests, replaces the options copy, so the fallback can be exercised.
     internal SdkQueueClientFactory(ILogger<SdkQueueClientFactory>? logger, Func<QueueClientOptions, QueueClientOptions> copyOptions)
     {
         _logger = logger ?? NullLogger<SdkQueueClientFactory>.Instance;
@@ -31,7 +31,7 @@ internal sealed class SdkQueueClientFactory : ISdkQueueClientFactory
 
         QueueClient Create(QueueClientOptions? options) => settings.UsesConnectionString
             ? new QueueClient(settings.ConnectionString, settings.QueueName, options)
-            : new QueueClient(settings.EndpointUri, settings.TokenCredential, options);
+            : new QueueClient(settings.QueueUri, settings.TokenCredential, options);
 
         if (settings.ClientOptions is not { MessageEncoding: QueueMessageEncoding.Base64 } callerOptions) return Create(settings.ClientOptions);
 

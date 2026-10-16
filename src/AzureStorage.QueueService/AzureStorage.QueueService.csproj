@@ -21,6 +21,13 @@
 		<Authors>Unifinity Software Corporation</Authors>
 		<AssemblyVersion></AssemblyVersion>
 		<Version>$(VersionPrefix)</Version>
+		<!-- IntelliSense: ship the doc comments in the package. -->
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<!-- Trimming and native AOT: the analyzers flag anything that would break them, and configuration binding is source-generated. -->
+		<IsAotCompatible>true</IsAotCompatible>
+		<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+		<!-- The binding generator reports the processor options it cannot bind from configuration (RateLimiter); that is intended. -->
+		<NoWarn>$(NoWarn);SYSLIB1100;SYSLIB1101</NoWarn>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -31,6 +38,7 @@
 		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
 		<PackageReference Include="Microsoft.Extensions.Options" Version="10.0.13" />
 		<PackageReference Include="OpenTelemetry.Api" Version="1.19.1" />
+		<PackageReference Include="System.Threading.RateLimiting" Version="10.0.13" />
 	</ItemGroup>
 
 	<ItemGroup>

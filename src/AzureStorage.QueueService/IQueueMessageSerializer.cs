@@ -7,7 +7,10 @@ namespace AzureStorage.QueueService;
 /// </summary>
 public interface IQueueMessageSerializer
 {
+    /// <summary>Writes <paramref name="value"/> as the bytes that go on the queue.</summary>
     BinaryData Serialize<T>(T value);
+
+    /// <summary>Reads a message body back as <typeparamref name="T"/>.</summary>
 
     /// <exception cref="DeserializationException">The body could not be read as <typeparamref name="T"/>.</exception>
     T? Deserialize<T>(BinaryData data);

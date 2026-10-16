@@ -5,7 +5,7 @@ namespace AzureStorage.QueueService;
 /// <summary>
 /// The processor handler behind <c>AddCloudEventProcessor&lt;TData, THandler&gt;()</c>. The processor receives and
 /// settles the CloudEvent envelope like any other message, and reads its data as part of reading the body
-/// (<see cref="ReadData"/>, its after-deserialize step); this hands the event and its data to the application's
+/// (<see cref="ReadData(QueueMessage{CloudEvent}, IQueueMessageSerializer)"/>, its after-deserialize step); this hands the event and its data to the application's
 /// handler. Created per message, in the message's scope.
 /// </summary>
 internal sealed class CloudEventHandlerAdapter<TData, THandler> : IQueueMessageHandler<CloudEvent>

@@ -1,9 +1,17 @@
+using System.Threading.RateLimiting;
+
 namespace AzureStorage.QueueService;
 
 /// <summary>
-/// How a processor registered with <c>AddProcessor&lt;TMessage, THandler&gt;()</c> runs. The processor is a set of
-/// workers; each receives one message, delivers it, and goes back for the next.
+/// How a processor registered with <c>AddProcessor&lt;TMessage, THandler&gt;()</c> runs. One receive loop takes messages
+/// for whichever handlers are free (up to <see cref="MaxConcurrentMessages"/> at once) and delivers each in its own
+/// scope, with its own lease renewal.
 /// </summary>
+/// <remarks>
+/// Everything except the callbacks (<see cref="RetryDelay"/>, <see cref="OnHandlerError"/>), <see cref="RateLimiter"/>
+/// and <see cref="DeadLetterOn{TException}"/> can be bound from configuration with the
+/// <c>AddProcessor&lt;TMessage, THandler&gt;(IConfiguration)</c> overload.
+/// </remarks>
 public sealed class QueueProcessorOptions
 {
     internal static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
@@ -14,7 +22,14 @@ public sealed class QueueProcessorOptions
     /// <summary>The longest visibility timeout the service accepts.</summary>
     internal static readonly TimeSpan MaxVisibility = TimeSpan.FromDays(7);
 
-    /// <summary>How many messages may be handled at once: one worker each, with its own scope and its own lease renewal.</summary>
+    private readonly List<Type> _deadLetterOn = new();
+
+
+    /// <summary>
+    /// How many messages may be handled at once, each in its own scope with its own lease renewal. The processor receives
+    /// only as many messages as there are free handlers (up to 32 per request), so it never holds a message no handler is
+    /// free for.
+    /// </summary>
     public int MaxConcurrentMessages { get; set; } = 1;
 
     /// <summary>
@@ -29,6 +44,19 @@ public sealed class QueueProcessorOptions
     /// renewal closes the avoidable window where a slow handler lets another consumer take the same message.
     /// </summary>
     public bool RenewVisibility { get; set; } = true;
+
+    /// <summary>
+    /// The longest time a lease is renewed for one delivery; null (the default) renews for as long as the handler runs.
+    /// Past it, renewal stops and the message becomes visible to other consumers when its lease lapses, so a hung handler
+    /// cannot hide its message for ever. Like Service Bus's <c>MaxAutoLockRenewalDuration</c>.
+    /// </summary>
+    public TimeSpan? MaxRenewalDuration { get; set; }
+
+    /// <summary>
+    /// Logs a warning, once per delivery, when a handler has been running this long; null turns it off. Default 10
+    /// minutes. The <c>queue_processor_oldest_handler_age_seconds</c> gauge shows the same thing as a number.
+    /// </summary>
+    public TimeSpan? LongRunningHandlerWarning { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
     /// Complete the message when the handler returns. Off, a message the handler returns without settling stays
@@ -55,11 +83,38 @@ public sealed class QueueProcessorOptions
     };
 
     /// <summary>
-    /// How long a worker waits after an empty receive before polling again; doubles up to <see cref="EmptyQueueBackoffMax"/>
-    /// and resets on the next message. Each worker polls on its own, so an idle processor with N workers makes N requests per interval.
+    /// Decides what happens to a message whose handler threw, when no <see cref="DeadLetterOn{TException}"/> rule matched:
+    /// retry it (the default without a callback), dead-letter it, or complete it. If the callback throws, the message is retried.
+    /// </summary>
+    public Func<HandlerErrorContext, HandlerErrorAction>? OnHandlerError { get; set; }
+
+    /// <summary>
+    /// Dead-letters a message straight away, without retrying it, when its handler throws <typeparamref name="TException"/>
+    /// or an exception derived from it: one that retrying cannot fix, such as a validation failure. Checked before
+    /// <see cref="OnHandlerError"/>.
+    /// </summary>
+    public QueueProcessorOptions DeadLetterOn<TException>() where TException : Exception
+    {
+        if (!_deadLetterOn.Contains(typeof(TException))) _deadLetterOn.Add(typeof(TException));
+        return this;
+    }
+
+    internal IReadOnlyList<Type> DeadLetterExceptionTypes => _deadLetterOn;
+
+    /// <summary>
+    /// Limits how fast the processor takes messages: one permit per message, acquired before each receive, and a receive
+    /// asks for no more messages than it has permits for. For example a <c>TokenBucketRateLimiter</c> to stay under a
+    /// downstream API's limit. The processor does not dispose it.
+    /// </summary>
+    public RateLimiter? RateLimiter { get; set; }
+
+    /// <summary>
+    /// How long the receive loop waits after an empty receive before polling again; doubles up to <see cref="EmptyQueueBackoffMax"/>
+    /// and resets on the next message. One loop polls per processor, however many messages it handles at once.
     /// </summary>
     public TimeSpan EmptyQueueBackoffMin { get; set; } = TimeSpan.FromSeconds(1);
 
+    /// <summary>The longest wait between polls of an empty queue.</summary>
     public TimeSpan EmptyQueueBackoffMax { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>The longest wait after a failed receive; the wait doubles from <see cref="EmptyQueueBackoffMin"/> and resets on the next success.</summary>
@@ -84,13 +139,48 @@ public sealed class QueueProcessorOptions
         if (ErrorBackoffMax < EmptyQueueBackoffMin) Fail(processorName, "ErrorBackoffMax must be at least EmptyQueueBackoffMin.");
         if (ShutdownDrainTimeout < TimeSpan.Zero) Fail(processorName, "ShutdownDrainTimeout cannot be negative.");
         if (RetryDelay is null) Fail(processorName, "RetryDelay must be set.");
+        if (MaxRenewalDuration is { } maxRenewal && maxRenewal <= TimeSpan.Zero) Fail(processorName, "MaxRenewalDuration must be positive, or null to renew for as long as the handler runs.");
+        if (LongRunningHandlerWarning is { } warning && warning <= TimeSpan.Zero) Fail(processorName, "LongRunningHandlerWarning must be positive, or null for no warning.");
 
         // Anything a timer waits on must be within what the timer APIs accept, or the wait throws at runtime instead.
-        foreach (var (name, value) in new[] { (nameof(EmptyQueueBackoffMax), EmptyQueueBackoffMax), (nameof(ErrorBackoffMax), ErrorBackoffMax), (nameof(ShutdownDrainTimeout), ShutdownDrainTimeout) })
+        foreach (var (name, value) in new[]
+                 {
+                     (nameof(EmptyQueueBackoffMax), EmptyQueueBackoffMax), (nameof(ErrorBackoffMax), ErrorBackoffMax), (nameof(ShutdownDrainTimeout), ShutdownDrainTimeout),
+                     (nameof(MaxRenewalDuration), MaxRenewalDuration ?? TimeSpan.Zero), (nameof(LongRunningHandlerWarning), LongRunningHandlerWarning ?? TimeSpan.Zero),
+                 })
         {
             if (value > MaxTimer) Fail(processorName, $"{name} must be no longer than {MaxTimer.TotalDays:0} days (it is {value}).");
         }
     }
 
     private static void Fail(string processorName, string problem) => throw new InvalidOperationException($"{processorName}: {problem}");
+}
+
+/// <summary>What a processor does with a message whose handler threw.</summary>
+public enum HandlerErrorAction
+{
+    /// <summary>Abandon it with <see cref="QueueProcessorOptions.RetryDelay"/>, to be delivered again; dead-lettered once it passes <see cref="QueueProcessorOptions.MaxDequeueCount"/>.</summary>
+    Retry,
+
+    /// <summary>Move it to the poison queue now.</summary>
+    DeadLetter,
+
+    /// <summary>Delete it: the failure does not matter, or the handler has dealt with it.</summary>
+    Complete,
+}
+
+/// <summary>What <see cref="QueueProcessorOptions.OnHandlerError"/> is told about a failed delivery.</summary>
+public sealed class HandlerErrorContext
+{
+    internal HandlerErrorContext(Exception exception, IQueueMessage message)
+    {
+        Exception = exception;
+        Message = message;
+    }
+
+    /// <summary>What the handler threw.</summary>
+    public Exception Exception { get; }
+
+    /// <summary>The message, still unsettled. Its <see cref="IQueueMessage.IsLastAttempt"/> says whether a retry is left.</summary>
+    public IQueueMessage Message { get; }
 }

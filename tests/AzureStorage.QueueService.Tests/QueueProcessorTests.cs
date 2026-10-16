@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Azure.Messaging;
@@ -169,15 +169,19 @@ public class QueueProcessorTests(ITestOutputHelper output)
         public ObservableTimeProvider Time { get; } = new();
         public QueueProcessor<TestObject, RecordingHandler> Processor { get; }
 
+        public CapturingLoggerProvider Logs { get; } = new();
+
         public Harness(ITestOutputHelper output, Action<QueueProcessorOptions>? configure = null, IStorageQueue? queue = null)
         {
             var services = new ServiceCollection();
-            services.AddLogging(logging => logging.AddProvider(new XUnitLoggerProvider(output)));
+            services.AddLogging(logging => logging.AddProvider(new XUnitLoggerProvider(output)).AddProvider(Logs));
             services.AddSingleton(State);
             services.AddScoped<ScopeMarker>();
             services.AddScoped<RecordingHandler>();
             services.Configure<QueueProcessorOptions>("opts", o =>
             {
+                // Off, so the timers a test counts are the processor's own waits and renewals.
+                o.LongRunningHandlerWarning = null;
                 o.EmptyQueueBackoffMin = TimeSpan.FromSeconds(1);
                 o.EmptyQueueBackoffMax = TimeSpan.FromSeconds(8);
                 configure?.Invoke(o);
@@ -231,7 +235,7 @@ public class QueueProcessorTests(ITestOutputHelper output)
     // Delivery
     // ---------------------------------------------------------------------------------------------------------
 
-    [Fact(DisplayName = "Each worker receives one message, handles it in its own scope, and completes it")]
+    [Fact(DisplayName = "The processor asks for as many messages as it has free handlers and handles each in its own scope")]
     public async Task Each_Worker_Handles_One_Message_In_Its_Own_Scope()
     {
         await using var h = new Harness(output, o => o.MaxConcurrentMessages = 2);
@@ -242,7 +246,8 @@ public class QueueProcessorTests(ITestOutputHelper output)
 
         h.State.Invocations.Select(i => i.MessageId).Should().BeEquivalentTo("1", "2");
         h.State.Invocations.Select(i => i.Scope).Distinct().Should().HaveCount(2, "every message gets a fresh scope");
-        h.Queue.Receives.Should().OnlyContain(r => r.Take == 1 && r.Visibility == TimeSpan.FromMinutes(1));
+        h.Queue.Receives[0].Should().Be((2, TimeSpan.FromMinutes(1)), "both handlers are free at the start");
+        h.Queue.Receives.Should().OnlyContain(r => r.Take >= 1 && r.Take <= 2 && r.Visibility == TimeSpan.FromMinutes(1));
     }
 
     [Fact(DisplayName = "A throwing handler abandons the message with the retry delay for its dequeue count")]
@@ -827,5 +832,68 @@ public class QueueProcessorTests(ITestOutputHelper output)
         message.Body!.Id.Should().Be("evt-1");
         message.Error.Should().NotBeNull();
         h.Ops.Count("deadletter").Should().Be(0);
+    }
+
+    // ---------------------------------------------------------------------------------------------------------
+    // 3.1: log levels, the last attempt, rate limiting, hung handlers
+    // ---------------------------------------------------------------------------------------------------------
+
+    [Fact(DisplayName = "A failing handler is a warning while retries remain and an error on the last attempt, which the handler can see")]
+    public async Task Handler_Failure_Log_Level_Follows_The_Last_Attempt()
+    {
+        await using var h = new Harness(output, o => o.MaxDequeueCount = 5);
+        var lastAttempts = new List<bool>();
+        h.State.Behaviour = (message, _, _) =>
+        {
+            lock (lastAttempts) lastAttempts.Add(message.IsLastAttempt);
+            throw new InvalidOperationException("boom");
+        };
+        h.Queue.Then(h.Message("early", dequeueCount: 1)).Then(h.Message("last", dequeueCount: 5));
+
+        await h.StartAsync();
+        await h.Ops.WaitForAsync("update", count: 2);
+
+        lastAttempts.Should().Equal(false, true);
+        h.Logs.Single(7).Level.Should().Be(LogLevel.Warning);
+        h.Logs.Single(27).Level.Should().Be(LogLevel.Error);
+    }
+
+    [Fact(DisplayName = "With a rate limiter, a receive asks only for as many messages as there are permits")]
+    public async Task Rate_Limiter_Caps_The_Receive()
+    {
+        using var limiter = new System.Threading.RateLimiting.TokenBucketRateLimiter(new System.Threading.RateLimiting.TokenBucketRateLimiterOptions
+        {
+            TokenLimit = 2,
+            TokensPerPeriod = 1,
+            ReplenishmentPeriod = TimeSpan.FromHours(1),
+            AutoReplenishment = false,
+        });
+        await using var h = new Harness(output, o => { o.MaxConcurrentMessages = 5; o.RateLimiter = limiter; });
+        h.Queue.Then(h.Message("1"));
+
+        await h.StartAsync();
+        await h.Queue.WaitForReceivesAsync(1);
+
+        h.Queue.Receives[0].Take.Should().Be(2, "five handlers are free but only two permits are");
+    }
+
+    [Fact(DisplayName = "MaxRenewalDuration stops renewing a handler's lease and says so, so a hung handler cannot hide its message for ever")]
+    public async Task Renewal_Stops_At_MaxRenewalDuration()
+    {
+        await using var h = new Harness(output, o => { o.VisibilityTimeout = TimeSpan.FromSeconds(10); o.MaxRenewalDuration = TimeSpan.FromSeconds(8); });
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.State.Behaviour = async (_, _, _) => await release.Task;
+        h.Queue.Then(h.Message("1"));
+
+        await h.StartAsync();
+        await h.WaitForHandlerStartAsync();
+        await h.AdvancePastTimerAsync(1, TimeSpan.FromSeconds(5)); // 5 s in: renewed
+        await h.Ops.WaitForAsync("update");
+        await h.AdvancePastTimerAsync(2, TimeSpan.FromSeconds(5)); // 10 s in: past the limit
+        await h.Logs.WaitForAsync(32);
+
+        release.SetResult();
+        await h.Ops.WaitForAsync("delete");
+        h.Ops.Count("update").Should().Be(1);
     }
 }

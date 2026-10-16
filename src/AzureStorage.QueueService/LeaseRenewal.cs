@@ -16,17 +16,22 @@ internal sealed class LeaseRenewal : IAsyncDisposable
     private readonly Task _loop;
     private bool _disposed;
 
-    private LeaseRenewal(Func<ValueTask> renewAsync, Func<bool> isSettled, TimeSpan interval, TimeProvider time, CancellationToken stopAll, Action<Exception> onFailed)
+    private LeaseRenewal(Func<ValueTask> renewAsync, Func<bool> isSettled, TimeSpan interval, TimeProvider time, CancellationToken stopAll, Action<Exception> onFailed, TimeSpan? maxDuration, Action? onLimitReached)
     {
         _stopWaiting = CancellationTokenSource.CreateLinkedTokenSource(stopAll);
-        _loop = RunAsync(renewAsync, isSettled, interval, time, _stopWaiting.Token, onFailed);
+        _loop = RunAsync(renewAsync, isSettled, interval, time, _stopWaiting.Token, onFailed, maxDuration, onLimitReached);
     }
 
+    /// <param name="interval">How long to wait before each renewal.</param>
+    /// <param name="time">The clock the waits use.</param>
+    /// <param name="onFailed">Called once if a renewal fails; renewal stops there.</param>
     /// <param name="renewAsync">Renews the lease once. Must not observe a cancellation token: an accepted renewal changes the receipt, so the response must be read.</param>
     /// <param name="isSettled">True once the message no longer needs renewing.</param>
     /// <param name="stopAll">The processor-wide signal that ends every renewal, for example at shutdown.</param>
-    public static LeaseRenewal Start(Func<ValueTask> renewAsync, Func<bool> isSettled, TimeSpan interval, TimeProvider time, CancellationToken stopAll, Action<Exception> onFailed) =>
-        new(renewAsync, isSettled, interval, time, stopAll, onFailed);
+    /// <param name="maxDuration">Stop renewing once this long has passed since the start; null for no limit.</param>
+    /// <param name="onLimitReached">Called once when <paramref name="maxDuration"/> stops the renewals.</param>
+    public static LeaseRenewal Start(Func<ValueTask> renewAsync, Func<bool> isSettled, TimeSpan interval, TimeProvider time, CancellationToken stopAll, Action<Exception> onFailed, TimeSpan? maxDuration = null, Action? onLimitReached = null) =>
+        new(renewAsync, isSettled, interval, time, stopAll, onFailed, maxDuration, onLimitReached);
 
     /// <summary>For lifetime tests only: the linked source whose disposal unregisters from the parent.</summary>
     internal CancellationTokenSource LinkedSource => _stopWaiting;
@@ -46,14 +51,22 @@ internal sealed class LeaseRenewal : IAsyncDisposable
         _stopWaiting.Dispose();
     }
 
-    private static async Task RunAsync(Func<ValueTask> renewAsync, Func<bool> isSettled, TimeSpan interval, TimeProvider time, CancellationToken stopWaiting, Action<Exception> onFailed)
+    private static async Task RunAsync(Func<ValueTask> renewAsync, Func<bool> isSettled, TimeSpan interval, TimeProvider time, CancellationToken stopWaiting, Action<Exception> onFailed, TimeSpan? maxDuration, Action? onLimitReached)
     {
+        var started = time.GetTimestamp();
         try
         {
             while (true)
             {
                 await Task.Delay(interval, time, stopWaiting);
                 if (isSettled()) return;
+                if (maxDuration is { } max && time.GetElapsedTime(started) >= max)
+                {
+                    // The lease lapses within one more interval and the message is delivered again, hung handler or not.
+                    onLimitReached?.Invoke();
+                    return;
+                }
+
                 await renewAsync();
             }
         }

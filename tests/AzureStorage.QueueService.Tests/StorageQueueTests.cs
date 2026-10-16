@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Azure;
 using Azure.Storage.Queues;
 using Azure.Storage.Queues.Models;
@@ -92,8 +92,9 @@ public class StorageQueueTests
         bad.DequeueCount.Should().Be(4);
         bad.RawBody.ToString().Should().Be("this is not base64!!");
 
+        var poisoned = CaptureSends(poison);
         await bad.DeadLetterAsync("undecodable");
-        poison.Verify(x => x.SendMessageAsync(It.Is<BinaryData>(b => b.ToString() == "this is not base64!!"), It.IsAny<TimeSpan?>(), It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()), Times.Once);
+        DeadLetterQueue.WithoutDeadLetterRecord(poisoned.Should().ContainSingle().Subject).ToString().Should().Be("this is not base64!!", "the text as it was on the queue is kept");
         client.Verify(x => x.DeleteMessageAsync("bad", "receipt-bad", It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -206,22 +207,29 @@ public class StorageQueueTests
         plain.CreationContext.Should().BeNull();
     }
 
-    [Fact(DisplayName = "Dead-lettering an enveloped message copies the whole envelope, so moving it back replays with its trace context")]
+    [Fact(DisplayName = "Dead-lettering keeps the envelope and records why; replaying strips the record and keeps the trace context")]
     public async Task DeadLetter_Keeps_The_Envelope()
     {
         using var caller = new Activity("caller").Start();
-        var wire = TraceContextEnvelope.Wrap(BinaryData.FromString(ValidJson), caller)!.ToString();
+        var sent = new MessageEnvelope();
+        sent.SetTraceContext(caller);
+        sent.SetBody(BinaryData.FromString(ValidJson));
+        var wire = sent.Write().ToString();
         var poison = new Mock<QueueClient>();
         var poisoned = CaptureSends(poison);
         var message = (await Create(ClientReturning(("1", wire)), () => poison.Object).ReceiveAsync<TestObject>())[0];
 
         await message.DeadLetterAsync("gave up");
 
-        var copy = poisoned.Should().ContainSingle().Subject.ToString();
-        copy.Should().Be(wire);
-        var replayed = (await Create(ClientReturning(("1", copy))).ReceiveAsync<TestObject>())[0];
+        var copy = poisoned.Should().ContainSingle().Subject;
+        MessageEnvelope.TryRead(copy, out var record, out _).Should().Be(EnvelopeKind.Envelope);
+        record!.TraceParent.Should().Be(sent.TraceParent);
+        record.DeadLetter.Should().BeEquivalentTo(new { Reason = "gave up", Category = DeadLetterCategories.Handler, MessageId = "1", DequeueCount = 2L, Queue = "orders" });
+
+        var replayed = (await Create(ClientReturning(("1", DeadLetterQueue.WithoutDeadLetterRecord(copy).ToString()))).ReceiveAsync<TestObject>())[0];
         replayed.Body!.Property1.Should().Be("test");
         replayed.CreationContext!.Value.TraceId.Should().Be(caller.TraceId);
+        replayed.WireBody.ToString().Should().Be(wire, "the replayed message is the one that was sent");
     }
 
     [Fact(DisplayName = "Complete deletes with the current receipt, settles, and refuses a second operation")]
@@ -264,17 +272,21 @@ public class StorageQueueTests
         client.Verify(x => x.UpdateMessageAsync("1", "receipt-1", (string?)null, TimeSpan.Zero, It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    [Fact(DisplayName = "Dead-letter copies the raw body to the poison queue unchanged, then deletes the original")]
-    public async Task DeadLetter_Copies_Raw_Body_Then_Deletes()
+    [Fact(DisplayName = "Dead-letter copies the body to the poison queue with a record of why, never to expire, then deletes the original")]
+    public async Task DeadLetter_Copies_Body_With_Record_Then_Deletes()
     {
         var client = ClientReturning(("1", ValidJson));
         var poison = new Mock<QueueClient>();
+        var poisoned = CaptureSends(poison);
         var message = (await Create(client, () => poison.Object).ReceiveAsync<TestObject>())[0];
 
         await message.DeadLetterAsync("gave up");
 
         poison.Verify(x => x.CreateIfNotExistsAsync(It.IsAny<IDictionary<string, string>>(), It.IsAny<CancellationToken>()), Times.Once);
-        poison.Verify(x => x.SendMessageAsync(It.Is<BinaryData>(b => b.ToString() == ValidJson), It.IsAny<TimeSpan?>(), It.IsAny<TimeSpan?>(), It.IsAny<CancellationToken>()), Times.Once);
+        poison.Verify(x => x.SendMessageAsync(It.IsAny<BinaryData>(), null, TimeSpan.FromSeconds(-1), It.IsAny<CancellationToken>()), Times.Once);
+        MessageEnvelope.TryRead(poisoned.Single(), out var record, out _).Should().Be(EnvelopeKind.Envelope);
+        record!.DeadLetter!.Reason.Should().Be("gave up");
+        DeadLetterQueue.WithoutDeadLetterRecord(poisoned.Single()).ToString().Should().Be(ValidJson, "a plain message replays as it was sent");
         client.Verify(x => x.DeleteMessageAsync("1", "receipt-1", It.IsAny<CancellationToken>()), Times.Once);
         message.Settlement.Should().Be(MessageSettlement.DeadLettered);
     }
